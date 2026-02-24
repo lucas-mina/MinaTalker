@@ -1,7 +1,7 @@
 // English language pack
 export default {
   header: {
-    title: 'Linly-Talker-Stream',
+    title: 'MinaMina',
     subtitle: 'Real-time Interactive Digital Human',
     status: {
       connected: 'Connected',
@@ -26,9 +26,9 @@ export default {
     ttsInputPlaceholder: 'Enter text for the digital human to read aloud...',
     ttsButton: 'Start Reading',
     ttsTitle: 'Input Text to Read',
-    welcomeMessage: 'Hello! I\'m Linly, a digital human. Nice to meet you. Click "Start Connection" on the right to begin our conversation!',
+    welcomeMessage: 'Hello! I\'m Mina, a digital human. Nice to meet you. Click "Start Connection" on the right to begin our conversation!',
     you: 'You',
-    ai: 'Linly'
+    ai: 'Mina'
   },
   
   video: {
@@ -63,7 +63,11 @@ export default {
       xiaomiStun: 'Xiaomi STUN',
       tencentStun: 'Tencent STUN',
       customStun: 'Custom...',
-      customStunAddress: 'Custom STUN Address'
+      customStunAddress: 'Custom STUN Address',
+      turnUsername: 'TURN Username',
+      turnUsernameDesc: 'TURN server auth username (optional)',
+      turnCredential: 'TURN Password',
+      turnCredentialDesc: 'TURN server auth credential (optional)'
     },
     
     recording: {

@@ -24,7 +24,7 @@ dependencies = [
     "PyYAML",
     "scipy",
     "soundfile==0.12.1",
-    "torch==2.5.0",
+    "torch==2.8.0",
     "torchvision",
     "torchaudio",
     "tqdm",
@@ -38,16 +38,16 @@ dependencies = [
 
 [tool.uv.sources]
 torch = [
-    { index = "pytorch-cu124" },
+    { index = "pytorch-cu128" },
 ]
 torchvision = [
-    { index = "pytorch-cu124" },
+    { index = "pytorch-cu128" },
 ]
 torchaudio = [
-    { index = "pytorch-cu124" },
+    { index = "pytorch-cu128" },
 ]
 
 [[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
 explicit = true

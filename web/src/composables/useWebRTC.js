@@ -4,30 +4,46 @@ export function useWebRTC(options = {}) {
   let sessionIdValue = 0
   const { onNotification } = options
   
-  const startPlay = async (stunServer = 'stun:stun.miwifi.com:3478') => {
+  /**
+   * Build ICE servers from config.
+   * @param {string|null|undefined|{ urls: string|string[], username?: string, credential?: string }} iceConfig
+   *   - string: single STUN/TURN URL (no auth)
+   *   - object: { urls, username?, credential? } for TURN with optional auth (like main.yaml turn_config)
+   *   - null/undefined: no ICE servers
+   */
+  const startPlay = async (iceConfig = 'stun:stun.miwifi.com:3478') => {
     console.log('开始连接 WebRTC...')
-    console.log('使用 STUN 服务器:', stunServer || '不使用 STUN')
-    
+    console.log('ICE 配置:', iceConfig == null ? '不使用' : (typeof iceConfig === 'string' ? iceConfig : '[TURN with auth]'))
+
     // 关闭之前的连接
     if (pc) {
       console.log('关闭旧连接...')
       pc.close()
       pc = null
     }
-    
+
     try {
       console.log('✅ 创建 RTCPeerConnection...')
-      
-      // 创建 RTCPeerConnection 配置
-      const configuration = {
-        iceServers: []
+
+      const configuration = { iceServers: [] }
+
+      if (iceConfig != null) {
+        if (typeof iceConfig === 'string') {
+          configuration.iceServers.push({ urls: iceConfig })
+        } else if (typeof iceConfig === 'object' && iceConfig !== null) {
+          const raw = iceConfig.urls
+          const urlList = Array.isArray(raw)
+            ? raw.filter(u => typeof u === 'string').map(u => u.trim()).filter(Boolean)
+            : (typeof raw === 'string' && raw.trim() ? [raw.trim()] : [])
+          if (urlList.length > 0) {
+            const entry = { urls: urlList.length === 1 ? urlList[0] : urlList }
+            if (typeof iceConfig.username === 'string' && iceConfig.username.trim()) entry.username = iceConfig.username.trim()
+            if (typeof iceConfig.credential === 'string' && iceConfig.credential.trim()) entry.credential = iceConfig.credential.trim()
+            configuration.iceServers.push(entry)
+          }
+        }
       }
-      
-      // 如果提供了 STUN 服务器，则添加
-      if (stunServer) {
-        configuration.iceServers.push({ urls: stunServer })
-      }
-      
+
       pc = new RTCPeerConnection(configuration)
       
       // 添加接收 track 的处理

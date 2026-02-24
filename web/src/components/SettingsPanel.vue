@@ -57,8 +57,26 @@
                   type="text" 
                   id="custom-stun" 
                   v-model="settings.customStunServer"
-                  placeholder="stun:your-server.com:3478"
+                  placeholder="stun:your-server.com:3478 or turn:host:3478"
                 >
+              </div>
+            </div>
+            <div class="setting-item" v-if="settings.useStun">
+              <div class="setting-label">
+                <label for="turn-username">{{ t('settings.webrtc.turnUsername') }}</label>
+                <span class="setting-desc">{{ t('settings.webrtc.turnUsernameDesc') }}</span>
+              </div>
+              <div class="setting-control">
+                <input type="text" id="turn-username" v-model="settings.turnUsername" placeholder="username">
+              </div>
+            </div>
+            <div class="setting-item" v-if="settings.useStun">
+              <div class="setting-label">
+                <label for="turn-credential">{{ t('settings.webrtc.turnCredential') }}</label>
+                <span class="setting-desc">{{ t('settings.webrtc.turnCredentialDesc') }}</span>
+              </div>
+              <div class="setting-control">
+                <input type="password" id="turn-credential" v-model="settings.turnCredential" placeholder="password">
               </div>
             </div>
           </div>
@@ -262,9 +280,11 @@ const showSettings = ref(false)
 const defaultSettings = {
   // WebRTC
   useStun: true,
-  stunServer: 'stun:stun.miwifi.com:3478',
-  customStunServer: '',
-  
+  stunServer: 'custom',
+  customStunServer: 'turn:101.78.221.190:3478',
+  turnUsername: 'username',
+  turnCredential: 'password',
+
   // 录制
   autoRecord: false,
   recordFormat: 'mp4',
@@ -273,12 +293,12 @@ const defaultSettings = {
   showDebugPanel: false,
   showTimestamp: true,
   theme: 'dark',
-  uiLanguage: 'zh-CN',
+  uiLanguage: 'en-US',
   videoSize: 100,
   
   // 语音
   voiceContinuous: false,
-  voiceLanguage: 'zh-CN'
+  voiceLanguage: 'en-US'
 }
 
 const settings = ref({ ...defaultSettings })

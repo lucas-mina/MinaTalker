@@ -63,7 +63,11 @@ export default {
       xiaomiStun: '小米 STUN',
       tencentStun: '腾讯 STUN',
       customStun: '自定义...',
-      customStunAddress: '自定义 STUN 地址'
+      customStunAddress: '自定义 STUN 地址',
+      turnUsername: 'TURN 用户名',
+      turnUsernameDesc: 'TURN 服务器认证用户名（可选）',
+      turnCredential: 'TURN 密码',
+      turnCredentialDesc: 'TURN 服务器认证密码（可选）'
     },
     
     recording: {

@@ -2,11 +2,18 @@
 app:
   listenport: 8010
   max_session: 1
-  
+
   # SSL/HTTPS 配置（可选，启用后支持远程录音功能）
   ssl: true
-  ssl_cert: ssl_certs/localhost.crt 
+  ssl_cert: ssl_certs/localhost.crt
   ssl_key: ssl_certs/localhost.key
+
+# WebRTC TURN 配置（可选，用于 NAT 穿透；前端设置面板也可配置）
+webrtc:
+  turn_config:
+    urls: ["turn:101.78.221.190:3478", "turns:101.78.221.190:3478"]
+    username: "username"
+    credential: "password"
 
 model:
   type: musetalk  # wav2lip | musetalk | ultralight | ernerf
