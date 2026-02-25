@@ -16,6 +16,7 @@ from .doubao import DoubaoTTS
 from .indextts2 import IndexTTS2
 from .xtts import XTTS
 from .azure import AzureTTS
+from .elevenlabs import ElevenLabsTTS
 
 __all__ = [
     "BaseTTS",
@@ -30,4 +31,5 @@ __all__ = [
     "IndexTTS2",
     "XTTS",
     "AzureTTS",
+    "ElevenLabsTTS",
 ]

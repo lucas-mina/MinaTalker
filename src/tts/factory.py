@@ -12,6 +12,7 @@ from .engines import (
     CosyVoiceAPITTS,
     DoubaoTTS,
     EdgeTTS,
+    ElevenLabsTTS,
     FishTTS,
     IndexTTS2,
     SovitsTTS,
@@ -30,6 +31,7 @@ _ENGINE_MAP: dict[str, Type[BaseTTS]] = {
     "doubao": DoubaoTTS,
     "indextts2": IndexTTS2,
     "azuretts": AzureTTS,
+    "elevenlabs": ElevenLabsTTS,
 }
 
 

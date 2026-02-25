@@ -109,6 +109,22 @@ def dict_to_config(config_dict: Dict) -> Config:
     )
 
 
+def resolve_avatar_prompt_file(avatar_id: int) -> Optional[str]:
+    """
+    Look up the prompt_file for a given avatar id from avatar_config.yaml.
+    Returns the prompt_file string, or None if not found.
+    """
+    from ..utils.paths import get_config_dir
+    avatar_config_path = get_config_dir() / "avatar_config.yaml"
+    if not avatar_config_path.exists():
+        return None
+    avatar_data = load_yaml_config(avatar_config_path)
+    for entry in avatar_data.get("avatars", []):
+        if entry.get("id") == avatar_id:
+            return entry.get("prompt_file")
+    return None
+
+
 def load_config(
     config_file: Optional[str] = None,
 ) -> Config:

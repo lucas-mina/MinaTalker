@@ -4,6 +4,24 @@ from typing import Optional, List, Dict, Any
 
 
 @dataclass
+class AvatarEntry:
+    """单个 Avatar 的配置条目"""
+    id: int = 0
+    key: str = ""
+    name: str = ""
+    age: int = 0
+    bio: str = ""
+    photo: str = ""
+    level: str = ""
+    location: str = ""
+    tags: List[str] = field(default_factory=list)
+    intimacy: int = 0
+    next_reward: str = ""
+    live: bool = False
+    prompt_file: str = "prompt_mina.txt"
+
+
+@dataclass
 class WebConfig:
     """前端 Web 配置"""
     port: int = 3000
@@ -148,10 +166,19 @@ class ModelConfig:
 @dataclass
 class TTSConfig:
     """TTS 配置"""
-    type: str = "edgetts"  # edgetts | azuretts | fishtts | gpt-sovits | cosyvoice | tencent | doubao | indextts2 | xtts
+    type: str = "edgetts"  # edgetts | azuretts | fishtts | gpt-sovits | cosyvoice | tencent | doubao | indextts2 | xtts | elevenlabs
     ref_file: str = "zh-CN-YunxiaNeural"
     ref_text: Optional[str] = None
     tts_server: str = "http://127.0.0.1:9880"
+    # API key field — used by engines that require one (e.g. elevenlabs).
+    # Supports ${ENV_VAR} substitution via the config loader.
+    api_key: Optional[str] = None
+
+    # ElevenLabs voice settings
+    similarity_boost: float = 0.75
+    style: float = 0.0
+    use_speaker_boost: bool = True
+    speed: float = 1.0
 
 
 @dataclass
@@ -212,6 +239,8 @@ class Config:
     # 其他动态配置
     sessionid: int = 0
     customopt: List = field(default_factory=list)
+    # resolved per-session prompt file (set at session creation time)
+    prompt_file: Optional[str] = None
     
     @property
     def ernerf(self) -> ERNeRfConfig:

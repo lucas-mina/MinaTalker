@@ -74,12 +74,14 @@ export function useWebRTC(options = {}) {
       await pc.setLocalDescription(offer)
       
       console.log('🔗 发送 Offer 到服务器...')
+      const selectedAvatar = JSON.parse(sessionStorage.getItem('selectedAvatar') || 'null')
       const response = await fetch('/offer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sdp: pc.localDescription.sdp,
-          type: pc.localDescription.type
+          type: pc.localDescription.type,
+          avatar_id: selectedAvatar?.id ?? null
         })
       })
       

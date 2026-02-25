@@ -1,6 +1,9 @@
 <!-- Linly-Talker-Stream (https://github.com/Kedreamix/Linly-Talker-Stream). Copyright [Linly-talker-stream@kedreamix]. Apache-2.0. -->
 <template>
-  <div class="page-container">
+  <!-- Avatar selection screen -->
+  <SelectView v-if="!avatarSelected" @avatar-selected="onAvatarSelected" />
+
+  <div v-else class="page-container">
     <!-- Full-screen video background -->
     <div class="video-container">
       <video id="video" autoplay playsinline class="remote-video"></video>
@@ -33,6 +36,9 @@
           </div>
         </div>
         <div class="header-right">
+          <button class="btn-back-select" @click="goToSelect" :title="t('header.backToSelect')">
+            <i class="bi bi-grid-3x3-gap-fill"></i>
+          </button>
           <SettingsPanel 
             @settings-changed="onSettingsChanged" 
             @notification="showNotification"
@@ -246,6 +252,7 @@
 
 <script setup>
 import { ref, computed, onMounted, nextTick } from 'vue'
+import SelectView from './components/SelectView.vue'
 import DebugPanel from './components/DebugPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import { useWebRTC } from './composables/useWebRTC'
@@ -271,6 +278,16 @@ marked.setOptions({
 })
 
 const { t, setLocale, loadLocale } = useI18n()
+
+// ── Avatar selection gate ────────────────────────────────────────────────────
+const avatarSelected = ref(!!sessionStorage.getItem('selectedAvatar'))
+
+function onAvatarSelected(avatar) {
+  // Only live avatars enter the chat UI; others are handled inside SelectView
+  if (avatar.live) {
+    avatarSelected.value = true
+  }
+}
 
 // Markdown 渲染函数
 const renderMarkdown = (text) => {
@@ -356,6 +373,12 @@ const getVoiceButtonTitle = computed(() => {
 function getCurrentTime() {
   const now = new Date()
   return `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`
+}
+
+// Navigate back to avatar selection page
+const goToSelect = () => {
+  sessionStorage.removeItem('selectedAvatar')
+  avatarSelected.value = false
 }
 
 // 通知系统
@@ -1195,6 +1218,25 @@ body {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+}
+
+.btn-back-select {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(139, 92, 246, 0.15);
+  color: #a78bfa;
+  font-size: 1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s, transform 0.15s;
+}
+.btn-back-select:hover {
+  background: rgba(139, 92, 246, 0.35);
+  transform: scale(1.08);
 }
 
 .icon-btn {

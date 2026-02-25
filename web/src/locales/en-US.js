@@ -9,7 +9,8 @@ export default {
       disconnected: 'Disconnected'
     },
     session: 'Session',
-    github: 'GitHub'
+    github: 'GitHub',
+    backToSelect: 'Back to Avatar Selection'
   },
   
   chat: {

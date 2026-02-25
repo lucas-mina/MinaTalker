@@ -41,8 +41,13 @@ model:
 
 # TTS 配置信息，可以改对应的模型，建议edgetts
 tts:
-  type: edgetts  # edgetts | azuretts | fishtts | gpt-sovits | cosyvoice | tencent | doubao | indextts2 | xtts
+  type: edgetts  # edgetts | azuretts | fishtts | gpt-sovits | cosyvoice | tencent | doubao | indextts2 | xtts | elevenlabs
   ref_file: zh-CN-YunxiaNeural
+
+  # ElevenLabs 示例配置：
+  # type: elevenlabs
+  # ref_file: JBFqnCBsd6RMkjVDRZzb   # ElevenLabs voice ID
+  # api_key: ${ELEVENLABS_API_KEY}    # 支持环境变量引用
 
 # ASR 配置信息，可以改对应的模型，建议browser
 asr:

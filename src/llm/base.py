@@ -17,6 +17,12 @@ SENTENCE_DELIMITERS = ",.!;:，。！？：；"
 MIN_SENTENCE_LENGTH = 10
 
 
+def _is_noise(text: str, delimiters: str) -> bool:
+    """Return True if text is purely punctuation/whitespace with no real word content."""
+    stripped = text.strip()
+    return bool(stripped) and all(c in delimiters + " " for c in stripped)
+
+
 class TextStreamProcessor:
     """文本流处理器，负责分句和缓冲"""
     
@@ -37,7 +43,10 @@ class TextStreamProcessor:
                 last_pos = i + 1
                 
                 if len(sentence) >= self.min_length:
-                    callback(sentence)
+                    # Strip any leading noise prefix the buffer may have carried (e.g. "..")
+                    sentence = sentence.lstrip(self.delimiters + " ") if _is_noise(self.buffer, self.delimiters) else sentence
+                    if sentence:
+                        callback(sentence)
                     self.buffer = ""
                 else:
                     self.buffer = sentence
@@ -46,7 +55,9 @@ class TextStreamProcessor:
     
     def flush(self, callback) -> None:
         if self.buffer:
-            callback(self.buffer)
+            # Drop fragments that are pure punctuation/whitespace noise (e.g. ".", "..")
+            if not _is_noise(self.buffer, self.delimiters) and self.buffer.strip():
+                callback(self.buffer)
             self.buffer = ""
 
 
@@ -60,13 +71,21 @@ class BaseLLM(ABC):
     
     def _load_system_prompt(self) -> str:
         from pathlib import Path
-        
-        prompt_file = Path(__file__).parent.parent.parent / 'config' / 'prompt.txt'
-        
+
+        config_dir = Path(__file__).parent.parent.parent / 'config'
+
+        # Per-avatar prompt file takes priority when set on the session config
+        configured = getattr(self.config, 'prompt_file', None) if self.config else None
+        if configured:
+            prompt_file = config_dir / configured
+        else:
+            prompt_file = config_dir / 'prompt.txt'
+
         try:
-            return prompt_file.read_text(encoding='utf-8').strip()
+            text = prompt_file.read_text(encoding='utf-8').strip()
+            logger.info(f"Loaded system prompt from: {prompt_file}")
+            return text
         except FileNotFoundError:
-            # 没有自定义 prompt 时使用默认值
             logger.warning(f"Prompt file not found: {prompt_file}, using default")
             return DEFAULT_SYSTEM_PROMPT
         except Exception as e:

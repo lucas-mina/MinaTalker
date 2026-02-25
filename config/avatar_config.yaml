@@ -1,0 +1,29 @@
+# avatar config
+avatars:
+  - id: 10
+    key: mizuki
+    name: 弥生みづき
+    age: 21
+    bio: Live Streamer. Voice/Text mode available.
+    photo: /select/girl1.jpg
+    level: "50,000"
+    location: Japan
+    tags: ["#Live", "#Cute", "#VoiceMode"]
+    intimacy: 25
+    next_reward: Special Video
+    live: true
+    prompt_file: prompt_mizuki.txt
+
+  - id: 11
+    key: mina
+    name: Mina Girl
+    age: 21
+    bio: Live Streamer. Voice/Text mode available.
+    photo: /select/girl3.jpg
+    level: "50,000"
+    location: Japan
+    tags: ["#Live", "#Cute", "#VoiceMode"]
+    intimacy: 25
+    next_reward: Special Video
+    live: true
+    prompt_file: prompt_mina.txt

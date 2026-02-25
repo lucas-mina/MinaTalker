@@ -9,7 +9,8 @@ export default {
       disconnected: '未连接'
     },
     session: '会话',
-    github: 'GitHub'
+    github: 'GitHub',
+    backToSelect: '返回选择 Avatar'
   },
   
   chat: {
