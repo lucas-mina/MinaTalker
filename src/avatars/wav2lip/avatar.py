@@ -33,6 +33,9 @@ from src.utils.logging import logger
 device = "cuda" if torch.cuda.is_available() else ("mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()) else "cpu")
 print('Using {} for inference.'.format(device))
 
+# In-process cache for avatar assets: avatar_id -> (frame_list, face_list, coord_list)
+_AVATAR_CACHE = {}
+
 def _load(checkpoint_path):
 	# weights_only=True: safe for state_dict checkpoints; silences FutureWarning
 	kwargs = {"weights_only": True}
@@ -55,6 +58,11 @@ def load_model(path):
 	return model.eval()
 
 def load_avatar(avatar_id):
+    # Return from cache if already loaded
+    cached = _AVATAR_CACHE.get(avatar_id)
+    if cached is not None:
+        return cached
+
     avatar_path = f"./data/avatars/{avatar_id}"
     full_imgs_path = f"{avatar_path}/full_imgs" 
     face_imgs_path = f"{avatar_path}/face_imgs" 
@@ -70,7 +78,26 @@ def load_avatar(avatar_id):
     input_face_list = sorted(input_face_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
     face_list_cycle = read_imgs(input_face_list)
 
-    return frame_list_cycle,face_list_cycle,coord_list_cycle
+    avatar_data = (frame_list_cycle, face_list_cycle, coord_list_cycle)
+    _AVATAR_CACHE[avatar_id] = avatar_data
+    return avatar_data
+
+
+def preload_avatars(avatar_ids):
+    """
+    Preload avatar assets into memory for the given ids.
+    Safe to call multiple times; already-cached ids are skipped.
+    """
+    for avatar_id in avatar_ids:
+        if not isinstance(avatar_id, str) or not avatar_id:
+            continue
+        if avatar_id in _AVATAR_CACHE:
+            continue
+        try:
+            logger.info("Preloading Wav2Lip avatar assets: %s", avatar_id)
+            load_avatar(avatar_id)
+        except Exception:
+            logger.exception("Failed to preload Wav2Lip avatar %s", avatar_id)
 
 @torch.no_grad()
 def warm_up(batch_size,model,modelres):
@@ -182,7 +209,12 @@ class Wav2LipAvatar(BaseAvatar):
         self.res_frame_queue = Queue(self.batch_size*2)  #mp.Queue
         #self.__loadavatar()
         self.model = model
-        self.frame_list_cycle,self.face_list_cycle,self.coord_list_cycle = avatar
+        frames, faces, coords = avatar
+        # Each instance needs its own list objects so that switch_avatar's
+        # in-place slice assignment doesn't corrupt the shared cache entry.
+        self.frame_list_cycle = list(frames)
+        self.face_list_cycle  = list(faces)
+        self.coord_list_cycle = list(coords)
 
         self.audio_stream = LipAudioStreamHandler(config, self)
         self.audio_stream.warm_up()
@@ -202,6 +234,56 @@ class Wav2LipAvatar(BaseAvatar):
         #t=time.perf_counter()
         combine_frame[y1:y2, x1:x2] = res_frame
         return combine_frame
+
+    def switch_avatar(self, avatar_id: str):
+        """
+        Switch the underlying avatar frames/coords to a different
+        pre-generated wav2lip avatar (e.g. wav2lip_avatar1_ex).
+
+        This reloads the avatar data from ./data/avatars/<avatar_id>
+        but reuses the already loaded Wav2Lip model.
+
+        The inference thread captured the face_list_cycle object and its
+        length at start-up. We must keep the same list object and the same
+        length so the running inference loop never sees an out-of-range index.
+        If the new avatar has a different frame count we cycle/trim it to
+        match the original length before swapping in-place.
+        """
+        logger.info("Wav2LipAvatar.switch_avatar -> %s", avatar_id)
+        try:
+            new_frames, new_faces, new_coords = load_avatar(avatar_id)
+        except Exception:
+            logger.exception("Failed to switch Wav2Lip avatar to %s", avatar_id)
+            return
+
+        old_len = len(self.face_list_cycle)
+        new_len = len(new_faces)
+
+        if new_len != old_len:
+            logger.info(
+                "Wav2LipAvatar.switch_avatar(%s): frame count changed "
+                "(%d -> %d); normalizing to %d by cycling.",
+                avatar_id, old_len, new_len, old_len,
+            )
+            # Build lists of exactly old_len by cycling through the new data
+            def _normalize(lst, target):
+                if not lst:
+                    return lst
+                return [lst[i % len(lst)] for i in range(target)]
+
+            new_faces  = _normalize(new_faces,  old_len)
+            new_frames = _normalize(new_frames, old_len)
+            new_coords = _normalize(new_coords, old_len)
+
+        # Replace background frames and coords (these are read via self.* in
+        # process_frames / paste_back_frame, so simple reassignment is safe).
+        self.frame_list_cycle = new_frames
+        self.coord_list_cycle = new_coords
+
+        # Update face_list_cycle in-place so the inference thread, which
+        # holds a direct reference to the original list object, immediately
+        # starts pulling from the new avatar's face crops.
+        self.face_list_cycle[:] = new_faces
             
     def render(self,quit_event,loop=None,audio_track=None,video_track=None):
         #if self.opt.asr:

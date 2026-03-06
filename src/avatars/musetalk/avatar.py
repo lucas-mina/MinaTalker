@@ -31,6 +31,9 @@ from src.avatars.base import BaseAvatar
 from tqdm import tqdm
 from src.utils.logging import logger
 
+_AVATAR_CACHE = {}
+
+
 def load_model():
     # load model weights
     vae, unet, pe = load_all_model()
@@ -46,6 +49,11 @@ def load_model():
     return vae, unet, pe, timesteps, audio_processor
 
 def load_avatar(avatar_id):
+    # Return from cache if available
+    cached = _AVATAR_CACHE.get(avatar_id)
+    if cached is not None:
+        return cached
+
     #self.video_path = '' #video_path
     #self.bbox_shift = opt.bbox_shift
     avatar_path = f"./data/avatars/{avatar_id}"
@@ -73,7 +81,32 @@ def load_avatar(avatar_id):
     input_mask_list = glob.glob(os.path.join(mask_out_path, '*.[jpJP][pnPN]*[gG]'))
     input_mask_list = sorted(input_mask_list, key=lambda x: int(os.path.splitext(os.path.basename(x))[0]))
     mask_list_cycle = read_imgs(input_mask_list)
-    return frame_list_cycle,mask_list_cycle,coord_list_cycle,mask_coords_list_cycle,input_latent_list_cycle
+    avatar_data = (
+        frame_list_cycle,
+        mask_list_cycle,
+        coord_list_cycle,
+        mask_coords_list_cycle,
+        input_latent_list_cycle,
+    )
+    _AVATAR_CACHE[avatar_id] = avatar_data
+    return avatar_data
+
+
+def preload_avatars(avatar_ids):
+    """
+    Preload MuseTalk avatar assets into memory for the given ids.
+    Safe to call multiple times; already-cached ids are skipped.
+    """
+    for avatar_id in avatar_ids:
+        if not isinstance(avatar_id, str) or not avatar_id:
+            continue
+        if avatar_id in _AVATAR_CACHE:
+            continue
+        try:
+            logger.info("Preloading MuseTalk avatar assets: %s", avatar_id)
+            load_avatar(avatar_id)
+        except Exception:
+            logger.exception("Failed to preload MuseTalk avatar %s", avatar_id)
 
 @torch.no_grad()
 def warm_up(batch_size,model):
@@ -206,7 +239,14 @@ class MuseTalkAvatar(BaseAvatar):
         self.res_frame_queue = mp.Queue(self.batch_size*2)
 
         self.vae, self.unet, self.pe, self.timesteps, self.audio_processor = model
-        self.frame_list_cycle,self.mask_list_cycle,self.coord_list_cycle,self.mask_coords_list_cycle, self.input_latent_list_cycle = avatar
+        frames, masks, coords, mask_coords, latents = avatar
+        # Each instance needs its own list objects so that switch_avatar's
+        # in-place slice assignment doesn't corrupt the shared cache entry.
+        self.frame_list_cycle       = list(frames)
+        self.mask_list_cycle        = list(masks)
+        self.coord_list_cycle       = list(coords)
+        self.mask_coords_list_cycle = list(mask_coords)
+        self.input_latent_list_cycle = list(latents)
         #self.__loadavatar()
 
         self.audio_stream = MuseAudioStreamHandler(config, self, self.audio_processor)
@@ -262,6 +302,62 @@ class MuseTalkAvatar(BaseAvatar):
 
         combine_frame = get_image_blending(ori_frame,res_frame,bbox,mask,mask_crop_box)
         return combine_frame
+
+    def switch_avatar(self, avatar_id: str):
+        """
+        Switch the underlying MuseTalk avatar (latents/masks/coords)
+        to a different pre-generated avatar id, e.g. avator_1_ex.
+
+        The inference thread holds a direct reference to input_latent_list_cycle
+        and captured its length at start-up. We must keep the same list object
+        and the same length. If the new avatar has a different frame count we
+        normalize it by cycling/trimming before swapping in-place.
+        """
+        logger.info("MuseTalkAvatar.switch_avatar -> %s", avatar_id)
+        try:
+            avatar = load_avatar(avatar_id)
+        except Exception:
+            logger.exception("Failed to switch MuseTalk avatar to %s", avatar_id)
+            return
+
+        (
+            new_frames,
+            new_masks,
+            new_coords,
+            new_mask_coords,
+            new_latents,
+        ) = avatar
+
+        old_len = len(self.input_latent_list_cycle)
+        new_len = len(new_latents)
+
+        if new_len != old_len:
+            logger.info(
+                "MuseTalkAvatar.switch_avatar(%s): frame count changed "
+                "(%d -> %d); normalizing to %d by cycling.",
+                avatar_id, old_len, new_len, old_len,
+            )
+
+            def _normalize(lst, target):
+                if not lst:
+                    return lst
+                return [lst[i % len(lst)] for i in range(target)]
+
+            new_frames      = _normalize(new_frames,      old_len)
+            new_masks       = _normalize(new_masks,       old_len)
+            new_coords      = _normalize(new_coords,      old_len)
+            new_mask_coords = _normalize(new_mask_coords, old_len)
+            new_latents     = _normalize(new_latents,     old_len)
+
+        # Reassign background and mask lists (read via self.* only)
+        self.frame_list_cycle       = new_frames
+        self.mask_list_cycle        = new_masks
+        self.coord_list_cycle       = new_coords
+        self.mask_coords_list_cycle = new_mask_coords
+
+        # Update latents in-place so the inference thread immediately
+        # uses the new avatar without seeing an out-of-range index.
+        self.input_latent_list_cycle[:] = new_latents
             
     def render(self,quit_event,loop=None,audio_track=None,video_track=None):
         #if self.opt.asr:

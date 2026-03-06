@@ -7,12 +7,13 @@ ASR 工厂类
 from typing import Type, Optional
 
 from src.asr.base import BaseASR
-from src.asr.engines import WhisperASR, FunASR
+from src.asr.engines import WhisperASR, FunASR, SenseVoiceASR
 
 
 _ENGINE_MAP: dict[str, Type[BaseASR]] = {
     "whisper": WhisperASR,
     "funasr": FunASR,
+    "sensevoice": SenseVoiceASR,
 }
 
 
@@ -33,13 +34,15 @@ def create_asr_engine(
     if asr_type == "whisper":
         return engine_cls(config=config, model_size=model_size)
     else:
-        return engine_cls(config=config, **kwargs)
+        # Strip None values so engine defaults are preserved
+        extra = {k: v for k, v in kwargs.items() if v is not None}
+        return engine_cls(config=config, **extra)
 
 _asr_instance: Optional[BaseASR] = None
 
 
 def get_asr_engine(
-    asr_type: str = "whisper",
+    asr_type: str = "sensevoice",
     model_size: str = "base",
     config=None,
     force_new: bool = False,

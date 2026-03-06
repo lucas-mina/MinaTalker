@@ -19,6 +19,9 @@ class AvatarEntry:
     next_reward: str = ""
     live: bool = False
     prompt_file: str = "prompt_mina.txt"
+    model_avatar_id: str = ""
+    model_avatar_id_ex: str = ""
+    elevenlabs_voice_id: str = ""
 
 
 @dataclass
@@ -157,6 +160,8 @@ class ModelConfig:
     avatar_id: str = "avator_1"
     batch_size: int = 16
     model_path: str = "./models"
+    # 是否在启动时预加载所有 Avatar 及其 *_ex 变体（根据 avatar_config.yaml）
+    preload_avatars: bool = False
     
     # 模型专属配置
     ernerf: ERNeRfConfig = field(default_factory=ERNeRfConfig)
@@ -182,13 +187,25 @@ class TTSConfig:
 
 
 @dataclass
+class VADConfig:
+    """SileroVAD 语音活动检测配置"""
+    enabled: bool = True          # False = skip VAD, always pass audio to ASR
+    threshold: float = 0.5        # speech probability threshold (0.0–1.0)
+    min_speech_ms: int = 250      # minimum speech duration in ms; shorter clips = silence
+    min_silence_ms: int = 100     # minimum trailing silence to separate utterances
+    speech_pad_ms: int = 30       # pad speech segments on both sides to avoid clipping
+
+
+@dataclass
 class ASRConfig:
     """ASR 语音识别配置"""
-    mode: str = "browser"  # browser | server | auto (优先浏览器，不支持时降级到服务器)
-    type: str = "whisper"  # whisper | funasr (仅当 mode=server 时使用)
+    mode: str = "server"  # browser | server | auto (优先浏览器，不支持时降级到服务器)
+    type: str = "sensevoice"  # whisper | funasr | sensevoice (仅当 mode=server 时使用)
     model_size: str = "base"  # tiny | base | small | medium | large (仅 whisper 使用)
-    language: str = "zh"  # zh | en | auto
-    device: str = "auto"  # auto | cpu | cuda
+    model_name: str = "iic/SenseVoiceSmall"    # model name / local path for funasr/sensevoice engines
+    language: str = "auto"   # zh | en | auto
+    device: str = "auto"   # auto | cpu | cuda
+    vad: VADConfig = field(default_factory=VADConfig)
 
 
 @dataclass

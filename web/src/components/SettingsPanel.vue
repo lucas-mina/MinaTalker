@@ -1,9 +1,8 @@
 <template>
   <div class="settings-wrapper">
     <!-- 设置按钮 -->
-    <button class="settings-trigger" @click="toggleSettings" :class="{ active: showSettings }">
+    <button class="settings-trigger" @click="toggleSettings" :class="{ active: showSettings }" :title="t('settings.title')">
       <i class="bi bi-gear-fill"></i>
-      <span>{{ t('settings.title') }}</span>
     </button>
 
     <!-- 设置面板 -->
@@ -81,8 +80,8 @@
             </div>
           </div>
 
-          <!-- 录制设置 -->
-          <div class="settings-section">
+          <!-- 录制设置（前端隐藏，仅保留内部配置） -->
+          <div class="settings-section" v-if="showRecordingSettings">
             <h4><i class="bi bi-record-circle"></i> {{ t('settings.recording.title') }}</h4>
             
             <div class="setting-item">
@@ -220,6 +219,7 @@
               </div>
               <div class="setting-control">
                 <select v-model="settings.voiceLanguage" id="voice-lang">
+                  <option value="auto">{{ t('settings.voice.langAuto') }}</option>
                   <option value="zh-CN">{{ t('settings.voice.langZhCN') }}</option>
                   <option value="en-US">{{ t('settings.voice.langEnUS') }}</option>
                   <option value="ja-JP">{{ t('settings.voice.langJaJP') }}</option>
@@ -276,6 +276,9 @@ import { useI18n } from '../composables/useI18n'
 const { t } = useI18n()
 const showSettings = ref(false)
 
+// 是否展示录制相关设置（当前产品阶段隐藏）
+const showRecordingSettings = false
+
 // 默认设置
 const defaultSettings = {
   // WebRTC
@@ -296,9 +299,9 @@ const defaultSettings = {
   uiLanguage: 'en-US',
   videoSize: 100,
   
-  // 语音
-  voiceContinuous: false,
-  voiceLanguage: 'en-US'
+  // 语音（auto = 服务端自动检测语言）
+  voiceContinuous: true,
+  voiceLanguage: 'auto'
 }
 
 const settings = ref({ ...defaultSettings })
@@ -362,8 +365,8 @@ watch(settings, () => {
 .settings-trigger {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.75rem 1.5rem;
+  justify-content: center;
+  padding: 0.75rem;
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
   color: var(--text-primary);
@@ -401,6 +404,8 @@ watch(settings, () => {
   right: 0;
   width: 480px;
   height: 100vh;
+  height: 100dvh;
+  min-height: -webkit-fill-available;
   background: var(--bg-secondary);
   border-left: 1px solid var(--border);
   box-shadow: var(--shadow-lg);
@@ -620,6 +625,7 @@ input:checked + .slider:before {
 
 .settings-footer {
   padding: 1.5rem;
+  padding-bottom: max(1.5rem, env(safe-area-inset-bottom, 0));
   border-top: 1px solid var(--border);
   display: flex;
   gap: 1rem;

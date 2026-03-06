@@ -5,8 +5,8 @@ app:
 
   # SSL/HTTPS 配置（可选，启用后支持远程录音功能）
   ssl: true
-  ssl_cert: ssl_certs/localhost.crt
-  ssl_key: ssl_certs/localhost.key
+  ssl_cert: ssl_certs/certificate.crt
+  ssl_key: ssl_certs/private.key
 
 # WebRTC TURN 配置（可选，用于 NAT 穿透；前端设置面板也可配置）
 webrtc:
@@ -20,6 +20,10 @@ model:
   avatar_id: avator_1
   batch_size: 16
   model_path: ./models
+  # 是否在启动时预加载 avatar_config.yaml 中声明的 avatar_id 及其 *_ex 到内存
+  # true: 启动更慢、占用更多内存，但首次切换/送礼无磁盘加载延迟
+  # false: 按需加载，每个 avatar 第一次使用时才从磁盘读取
+  preload_avatars: false
   
   # ERNeRF 配置信息参考
   # type: ernerf
@@ -51,11 +55,16 @@ tts:
 
 # ASR 配置信息，可以改对应的模型，建议browser
 asr:
-  mode: browser  # browser | server | auto (优先浏览器，不支持时用后端)
-  type: whisper  # whisper | funasr (仅 mode=server 时使用)
+  mode: server  # browser | server | auto (优先浏览器，不支持时用后端)
+  type: sensevoice  # whisper | funasr | sensevoice (仅 mode=server 时使用)
+  model_name: "iic/SenseVoiceSmall"  # sensevoice 模型名 (本地路径或 ModelScope ID)
   model_size: base  # tiny | base | small | medium | large
-  language: zh  # zh | en | auto
+  language: auto  # zh | en | auto
   device: auto  # auto | cpu | cuda
+  vad:
+    enabled: true        # set false to disable VAD gating and always run Whisper
+    threshold: 0.62      # SileroVAD speech probability threshold (0.0–1.0); higher = less sensitive to noise
+    min_speech_ms: 350   # minimum speech segment duration in ms; shorter clips are treated as silence
 
 # LLM 配置信息，可以改对应的模型
 llm:

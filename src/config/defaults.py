@@ -1,5 +1,5 @@
 """默认配置值"""
-from .schema import Config, AppConfig, ModelConfig, TTSConfig, LLMConfig, AudioConfig, VideoConfig, CustomVideoConfig
+from .schema import Config, AppConfig, ModelConfig, TTSConfig, ASRConfig, VADConfig, LLMConfig, AudioConfig, VideoConfig, CustomVideoConfig
 
 
 def get_default_config() -> Config:

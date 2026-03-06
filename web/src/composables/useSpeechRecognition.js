@@ -111,7 +111,8 @@ export function useSpeechRecognition(options = {}) {
   
   const updateSettings = (settings) => {
     if (recognition) {
-      recognition.lang = settings.language || 'zh-CN'
+      const lang = settings.language && settings.language !== 'auto' ? settings.language : 'en-US'
+      recognition.lang = lang
       recognition.continuous = settings.continuous !== undefined ? settings.continuous : true
     }
   }

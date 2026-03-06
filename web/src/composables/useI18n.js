@@ -13,7 +13,7 @@ const currentLocale = ref('zh-CN')
 
 export function useI18n() {
   // 获取翻译文本
-  const t = (key) => {
+  const t = (key, params = {}) => {
     const keys = key.split('.')
     let value = languages[currentLocale.value]
     
@@ -25,7 +25,12 @@ export function useI18n() {
       }
     }
     
-    return value || key
+    let result = value || key
+    // Replace {placeholder} tokens with params values
+    if (params && typeof result === 'string') {
+      result = result.replace(/\{(\w+)\}/g, (_, name) => params[name] ?? `{${name}}`)
+    }
+    return result
   }
   
   // 切换语言

@@ -2,6 +2,8 @@
 export function useWebRTC(options = {}) {
   let pc = null
   let sessionIdValue = 0
+  /** Prevents overlapping startPlay() calls (e.g. double-click / fast avatar switch). */
+  let connectionInProgress = false
   const { onNotification } = options
   
   /**
@@ -12,6 +14,12 @@ export function useWebRTC(options = {}) {
    *   - null/undefined: no ICE servers
    */
   const startPlay = async (iceConfig = 'stun:stun.miwifi.com:3478') => {
+    if (connectionInProgress) {
+      const err = new Error('WebRTC connection already in progress')
+      err.code = 'CONNECTION_IN_PROGRESS'
+      throw err
+    }
+    connectionInProgress = true
     console.log('开始连接 WebRTC...')
     console.log('ICE 配置:', iceConfig == null ? '不使用' : (typeof iceConfig === 'string' ? iceConfig : '[TURN with auth]'))
 
@@ -73,23 +81,104 @@ export function useWebRTC(options = {}) {
       const offer = await pc.createOffer()
       await pc.setLocalDescription(offer)
       
-      console.log('🔗 发送 Offer 到服务器...')
       const selectedAvatar = JSON.parse(sessionStorage.getItem('selectedAvatar') || 'null')
-      const response = await fetch('/offer', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sdp: pc.localDescription.sdp,
-          type: pc.localDescription.type,
-          avatar_id: selectedAvatar?.id ?? null
-        })
-      })
-      
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      const payload = {
+        type: 'offer',
+        sdp: pc.localDescription.sdp,
+        avatar_id: selectedAvatar?.id ?? null
       }
-      
-      const data = await response.json()
+
+      let data
+      const useWs = options.useWs !== false
+      if (useWs) {
+        console.log('🔗 通过 WebSocket 发送 Offer...')
+        const wsScheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
+        const wsUrl = `${wsScheme}//${location.host}/ws`
+        data = await new Promise((resolve, reject) => {
+          const ws = new WebSocket(wsUrl)
+          let settled = false
+
+          const settle = (fn, value) => {
+            if (settled) return
+            settled = true
+            fn(value)
+          }
+
+          const timeout = setTimeout(() => {
+            ws.close()
+            settle(reject, new Error('WebSocket signaling timeout'))
+          }, 30000)
+
+          ws.onopen = () => {
+            ws.send(JSON.stringify(payload))
+
+            // Trickle ICE candidates to the server as they are gathered
+            pc.onicecandidate = (event) => {
+              if (!event.candidate || ws.readyState !== WebSocket.OPEN) return
+              ws.send(JSON.stringify({
+                type: 'candidate',
+                candidate: event.candidate.candidate,
+                sdpMid: event.candidate.sdpMid,
+                sdpMLineIndex: event.candidate.sdpMLineIndex,
+              }))
+            }
+          }
+
+          ws.onmessage = (event) => {
+            let msg
+            try { msg = JSON.parse(event.data) } catch (e) {
+              ws.close()
+              settle(reject, e)
+              return
+            }
+            if (msg.type === 'answer') {
+              clearTimeout(timeout)
+              // Keep ws open for trickle; store on pc so stopPlay can send bye
+              pc._signalingWs = ws
+              settle(resolve, msg)
+            } else if (msg.type === 'candidate') {
+              // Server-side trickle candidate — add to local PC
+              if (pc.remoteDescription && msg.candidate) {
+                pc.addIceCandidate({ candidate: msg.candidate, sdpMid: msg.sdpMid, sdpMLineIndex: msg.sdpMLineIndex })
+                  .catch(e => console.warn('addIceCandidate error:', e))
+              }
+            } else if (msg.type === 'pong') {
+              // Heartbeat response — nothing to do
+            } else if (msg.type === 'bye') {
+              ws.close()
+            } else if (msg.type === 'error') {
+              clearTimeout(timeout)
+              ws.close()
+              settle(reject, new Error(msg.error || 'signaling error'))
+            }
+          }
+
+          ws.onerror = () => {
+            clearTimeout(timeout)
+            settle(reject, new Error('WebSocket error'))
+          }
+
+          ws.onclose = () => {
+            clearTimeout(timeout)
+          }
+        })
+      } else {
+        console.log('🔗 通过 HTTP POST 发送 Offer...')
+        const response = await fetch('/offer', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sdp: payload.sdp,
+            type: pc.localDescription.type,
+            avatar_id: payload.avatar_id
+          })
+        })
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+        }
+        data = await response.json()
+      }
+
       console.log('📥 收到服务器响应，会话ID:', data.sessionid)
       
       // 保存 sessionId
@@ -99,7 +188,10 @@ export function useWebRTC(options = {}) {
         sessionInput.value = data.sessionid
       }
       
-      // 设置远程描述
+      // 设置远程描述（仅当此 PC 仍在等待 answer，避免错用另一轮连接的 answer）
+      if (pc.signalingState !== 'have-local-offer') {
+        throw new Error('PeerConnection was replaced or closed; ignoring stale answer')
+      }
       const answer = new RTCSessionDescription({
         sdp: data.sdp,
         type: data.type
@@ -112,14 +204,17 @@ export function useWebRTC(options = {}) {
       
     } catch (error) {
       console.error('❌ WebRTC 连接失败:', error)
-      if (onNotification) {
-        onNotification(`WebRTC 连接失败: ${error.message}`, 'error')
-      }
+      // Hide error message if instance not yet ready
+      // if (onNotification) {
+      //   onNotification(`WebRTC 连接失败: ${error.message}`, 'error')
+      // }
       if (pc) {
         pc.close()
         pc = null
       }
       throw error
+    } finally {
+      connectionInProgress = false
     }
   }
   
@@ -127,6 +222,12 @@ export function useWebRTC(options = {}) {
     console.log('停止 WebRTC 连接...')
     
     if (pc) {
+      // Send bye to the server before tearing down
+      const ws = pc._signalingWs
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ type: 'bye' })) } catch (_) {}
+        ws.close()
+      }
       pc.close()
       pc = null
       console.log('✅ WebRTC 连接已关闭')

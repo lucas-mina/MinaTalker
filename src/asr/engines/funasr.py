@@ -16,17 +16,19 @@ class FunASR(BaseASR):
     专注中文语音识别，速度快，准确度高
     """
     
-    def __init__(self, config=None, model_name: str = "paraformer-zh"):
+    def __init__(self, config=None, model_name: str = "paraformer-zh", device: str = "auto"):
         """
         初始化 FunASR
         
         Args:
             config: 配置对象
             model_name: 模型名称（默认 paraformer-zh）
+            device: 'auto' | 'cpu' | 'cuda'
         """
         super().__init__(config)
         
         self.model_name = model_name
+        self.device = device
         self.model = None
         
         logger.info(f'[FunASR] 模型: {model_name}')

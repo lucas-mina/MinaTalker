@@ -20,7 +20,7 @@ import argparse
 import torch.multiprocessing as mp
 
 from src.utils.logging import logger
-from src.config.loader import load_config
+from src.config.loader import load_config, list_all_avatar_model_ids
 from src.avatars.factory import prepare_avatar_model
 from src.server.state import state
 from src.server.server import create_app, run_server
@@ -53,6 +53,26 @@ def main():
     if state.config.custom_video.config_path:
         with open(state.config.custom_video.config_path, 'r') as file:
             state.config.customopt = json.load(file)
+    
+    # 可选：预加载所有 Avatar 及其 *_ex 变体到内存
+    if getattr(state.config.model, "preload_avatars", False):
+        try:
+            avatar_ids = set(list_all_avatar_model_ids() or [])
+            # 确保当前主 avatar 也包含在内
+            if state.config.model.avatar_id:
+                avatar_ids.add(state.config.model.avatar_id)
+            logger.info("预加载 Avatar 资源，数量: %d", len(avatar_ids))
+            model_type = state.config.model.type
+            if model_type == "wav2lip":
+                from src.avatars.wav2lip.avatar import preload_avatars as _preload
+            elif model_type == "musetalk":
+                from src.avatars.musetalk.avatar import preload_avatars as _preload
+            else:
+                _preload = None
+            if _preload and avatar_ids:
+                _preload(sorted(avatar_ids))
+        except Exception:
+            logger.exception("预加载 Avatar 资源失败，将继续正常启动。")
     
     # 加载模型
     logger.info(f"正在加载模型类型: {state.config.model.type}")

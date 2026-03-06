@@ -5,6 +5,7 @@ from aiohttp import web
 
 from src.utils.logging import logger
 from src.server.state import state
+from src.config.loader import resolve_avatar_flower_audiotype, resolve_avatar_ex_model_id
 
 
 async def set_audiotype(request):
@@ -27,6 +28,105 @@ async def set_audiotype(request):
             text=json.dumps(
                 {"code": -1, "msg": str(e)}
             ),
+        )
+
+
+async def set_flower_mode(request):
+    """
+    Trigger the per-avatar "flower" custom video/audio state.
+    
+    Frontend sends:
+      { "sessionid": number, "avatar_id": number }
+    
+    We look up the corresponding *_ex model id from avatar_config.yaml
+    (using the model_avatar_id_ex field) and, if supported, switch the
+    running avatar's underlying video to that *_ex avatar (e.g.
+    wav2lip_avatar1_ex). Optionally, we also look up a "flower"
+    audiotype and call set_custom_state for any configured custom
+    video/audio loops.
+    """
+    try:
+        params = await request.json()
+        sessionid = params.get("sessionid", 0)
+        avatar_id = params.get("avatar_id")
+
+        if not sessionid or sessionid not in state.avatar_streams:
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({"code": -1, "msg": "invalid or unknown sessionid"}),
+                status=400,
+            )
+
+        if avatar_id is None:
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({"code": -1, "msg": "avatar_id is required"}),
+                status=400,
+            )
+
+        try:
+            avatar_id_int = int(avatar_id)
+        except (TypeError, ValueError):
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({"code": -1, "msg": "avatar_id must be integer-like"}),
+                status=400,
+            )
+
+        avatar_stream = state.avatar_streams[sessionid]
+        if avatar_stream is None:
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({"code": -1, "msg": "avatar stream not initialized"}),
+                status=500,
+            )
+
+        # 1) Switch underlying avatar video to *_ex model if possible
+        ex_avatar_id = resolve_avatar_ex_model_id(avatar_id_int)
+        if ex_avatar_id and hasattr(avatar_stream, "switch_avatar"):
+            logger.info(
+                "[Flower] sessionid=%s avatar_id=%s switching avatar to %s",
+                sessionid,
+                avatar_id_int,
+                ex_avatar_id,
+            )
+            try:
+                avatar_stream.switch_avatar(ex_avatar_id)
+            except Exception:
+                logger.exception(
+                    "[Flower] failed to switch avatar to %s for sessionid=%s",
+                    ex_avatar_id,
+                    sessionid,
+                )
+
+        # 2) Optionally trigger a custom video/audio state, if configured
+        audiotype = resolve_avatar_flower_audiotype(avatar_id_int)
+        if audiotype:
+            logger.info(
+                "[Flower] sessionid=%s avatar_id=%s audiotype=%s",
+                sessionid,
+                avatar_id_int,
+                audiotype,
+            )
+            try:
+                avatar_stream.set_custom_state(audiotype, reinit=True)
+            except Exception:
+                logger.exception(
+                    "[Flower] failed to set_custom_state(%s) for sessionid=%s",
+                    audiotype,
+                    sessionid,
+                )
+
+        return web.Response(
+            content_type="application/json",
+            text=json.dumps({"code": 0, "msg": "ok"}),
+        )
+    except Exception as e:
+        logger.exception("[Flower] exception:")
+        return web.Response(
+            content_type="application/json",
+            text=json.dumps({"code": -1, "msg": str(e)}),
+            status=500,
         )
 
 

@@ -62,8 +62,8 @@ export default defineConfig({
     // 根据配置文件自动启用/禁用 HTTPS
     ...(useSSL && {
       https: {
-        key: fs.readFileSync(path.resolve(__dirname, '../ssl_certs/localhost.key')),
-        cert: fs.readFileSync(path.resolve(__dirname, '../ssl_certs/localhost.crt'))
+        key: fs.readFileSync(path.resolve(__dirname, '..', config?.app?.ssl_key || 'ssl_certs/private.key')),
+        cert: fs.readFileSync(path.resolve(__dirname, '..', config?.app?.ssl_cert || 'ssl_certs/certificate.crt'))
       }
     }),
     proxy: {
@@ -71,6 +71,11 @@ export default defineConfig({
         target: backendTarget,
         changeOrigin: true,
         secure: false  // 允许自签名证书
+      },
+      '/config': {
+        target: backendTarget,
+        changeOrigin: true,
+        secure: false
       },
       '/human': {
         target: backendTarget,
@@ -92,10 +97,21 @@ export default defineConfig({
         changeOrigin: true,
         secure: false
       },
+      '/avatars': {
+        target: backendTarget,
+        changeOrigin: true,
+        secure: false
+      },
       '/offer': {
         target: backendTarget,
         changeOrigin: true,
         secure: false
+      },
+      '/ws': {
+        target: backendTarget,
+        changeOrigin: true,
+        secure: false,
+        ws: true
       },
       '/interrupt_talk': {
         target: backendTarget,
@@ -108,6 +124,11 @@ export default defineConfig({
         secure: false
       },
       '/set_audiotype': {
+        target: backendTarget,
+        changeOrigin: true,
+        secure: false
+      },
+      '/flower': {
         target: backendTarget,
         changeOrigin: true,
         secure: false

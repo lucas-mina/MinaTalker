@@ -27,7 +27,7 @@ export default {
     ttsInputPlaceholder: '在这里输入想让数字人朗读的文字内容...',
     ttsButton: '开始朗读',
     ttsTitle: '输入朗读文本',
-    welcomeMessage: '你好！我是 Linly 数字人，很高兴见到你。点击右侧"启动连接"开始我们的对话吧！',
+    welcomeMessage: '你好！我是 {avatarName}',
     you: '你',
     ai: 'Linly'
   },
@@ -95,12 +95,13 @@ export default {
     
     voice: {
       title: '语音识别',
-      currentMode: '当前模式：浏览器语音识别 (Web Speech API)',
-      currentModeDesc: '使用浏览器内置语音识别，无需发送音频到服务器，实时识别速度快。',
-      currentModeNote: '⚠️ 仅支持 Chrome/Edge 浏览器，需要联网。',
+      currentMode: '当前模式：服务端 SenseVoice + VAD',
+      currentModeDesc: '客户端持续采集音频，服务端先用 VAD 过滤静音，再交给 SenseVoice 识别。',
+      currentModeNote: '提示：使用麦克风按钮可静音/取消静音监听。',
       continuous: '连续识别',
       continuousDesc: '持续监听语音输入',
       language: '识别语言',
+      langAuto: '自动检测 (服务端)',
       langZhCN: '中文 (简体)',
       langEnUS: '英语 (美国)',
       langJaJP: '日语',
@@ -130,9 +131,13 @@ export default {
     voiceRecognizing: '正在识别语音...',
     voiceRecognized: '语音识别完成',
     voiceNoContent: '未识别到语音内容',
+    voiceNoSpeech: '未检测到说话声音',
     voiceFailed: '语音识别失败',
     voiceRequestFailed: '语音识别请求失败',
     voiceMessageFailed: '语音消息发送失败，请重试',
+    sherpaVadFailed: 'Sherpa VAD 初始化或运行失败，请刷新页面后重试。',
+    voiceMuted: '麦克风已静音',
+    voiceUnmuted: '麦克风已取消静音',
     connectFirst: '请先启动连接',
     backendNotReady: '后端尚未完全启动，请稍候...'
   },
@@ -142,6 +147,8 @@ export default {
     recordDisabled: '请先启动连接后再录制',
     downloadDisabled: '暂无可下载的录制文件',
     voiceDisabled: '请先启动连接',
+    voiceMute: '点击静音麦克风',
+    voiceUnmute: '点击取消静音麦克风',
     voiceContinuous: '点击开始连续识别',
     voiceRecording: '点击停止',
     voiceHold: '按住说话'

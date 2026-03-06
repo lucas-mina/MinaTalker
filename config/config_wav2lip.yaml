@@ -4,8 +4,8 @@ app:
   max_session: 1
   
   ssl: true
-  ssl_cert: ssl_certs/localhost.crt
-  ssl_key: ssl_certs/localhost.key
+  ssl_cert: ssl_certs/certificate.crt
+  ssl_key: ssl_certs/private.key
   
   # 前端开发服务器配置
   web:
@@ -18,31 +18,45 @@ model:
   avatar_id: wav2lip_avatar1
   batch_size: 8  # 开发环境减小 batch size
   model_path: ./models
+  preload_avatars: true
 
 tts:
-  type: edgetts  # 开发环境使用免费的 EdgeTTS
-  ref_file: zh-CN-YunxiaNeural
+  #type: edgetts  # 开发环境使用免费的 EdgeTTS
+  #ref_file: zh-CN-YunxiaNeural
+  type: elevenlabs
+  ref_file: 9lHjugDhwqoxA5MhX0az   # ElevenLabs voice ID
+  api_key: sk_d83089209b96cac904ee726d76199b8be08d140e5b19e30e    # 支持环境变量引用
+  similarity_boost: 1.0
+  style: 0.0
+  use_speaker_boost: true
+  speed: 0.8
+ 
 
 asr:
-  mode: browser  # browser | server | auto
-  type: whisper  # whisper | funasr
-  model_size: base  # tiny | base | small | medium | large
+  mode: server  # browser | server | auto (优先浏览器，不支持时用后端)
+  type: sensevoice  # whisper | funasr | sensevoice (仅 mode=server 时使用)
+  model_name: "iic/SenseVoiceSmall"  # sensevoice 模型名 (本地路径或 ModelScope ID)
+  model_size: base  # tiny | base | small | medium | large (仅 whisper 使用)
   language: auto  # zh | en | auto
   device: auto  # auto | cpu | cuda
+  vad:
+    enabled: false       # client-side Silero VAD is enabled; disable backend VAD to avoid double gating/delay
+    threshold: 0.5       # from other project: speaking_threshold
+    min_speech_ms: 128   # start_delay 2048 samples @16kHz ≈ 128ms
+    min_silence_ms: 5000 # end_delay
+    speech_pad_ms: 32    # speech_padding 512 samples @16kHz ≈ 32ms
 
 llm:
-  api_key: ollama
-  base_url: http://127.0.0.1:11434/v1
-  model: huihui_ai/qwen3-abliterated:8b
+  base_url: https://api.x.ai/v1
+  model: grok-4-1-fast-non-reasoning
 
 audio:
   fps: 50
   sample_rate: 16000
 
 video:
-  width: 450
-  
-  height: 450
+  width: 576
+  height: 1024
   fps: 25
 
 custom_video:

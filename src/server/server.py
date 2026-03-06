@@ -26,15 +26,19 @@ def create_app():
     
     # 路由集中注册，避免分散难维护
     app.router.add_post("/offer", routes.offer)
+    app.router.add_get("/ws", routes.ws_signaling)
     app.router.add_post("/human", routes.human)
     app.router.add_post("/humanaudio", routes.humanaudio)
     app.router.add_post("/asr", routes.asr)
     app.router.add_post("/set_audiotype", routes.set_audiotype)
     app.router.add_post("/record", routes.record)
+    app.router.add_post("/flower", routes.set_flower_mode)
     app.router.add_post("/interrupt_talk", routes.interrupt_talk)
     app.router.add_post("/is_speaking", routes.is_speaking)
     app.router.add_post("/clear_history", routes.clear_history)
     app.router.add_get("/health", routes.health_check)
+    app.router.add_get("/config", routes.get_config)
+    app.router.add_get("/avatars", routes.list_avatars)
     app.router.add_get("/download/{filename}", routes.download_record)
     # 前端静态资源托管
     app.router.add_static('/', path='web')
@@ -81,6 +85,8 @@ def run_server(app, config):
     else:
         logger.info(f'│  证书文件: {config.app.ssl_cert:<28} │')
     
+    ws_scheme = 'wss' if protocol == 'https' else 'ws'
+    logger.info(f'│  WebSocket: {ws_scheme}://<host>:{listen_port}/ws')
     logger.info('└─────────────────────────────────────────────┘')
     
     config.app.protocol = protocol

@@ -7,8 +7,10 @@ ASR 引擎实现集中入口
 
 from .whisper import WhisperASR
 from .funasr import FunASR
+from .sensevoice import SenseVoiceASR
 
 __all__ = [
     "WhisperASR",
     "FunASR",
+    "SenseVoiceASR",
 ]

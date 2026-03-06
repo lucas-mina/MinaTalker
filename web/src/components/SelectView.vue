@@ -247,7 +247,7 @@
 
     <!-- ══ AVATAR DETAIL MODAL ══ -->
     <transition name="modal">
-      <div v-if="selectedAvatar" class="modal-backdrop" @click.self="selectedAvatar = null">
+      <div v-if="selectedAvatar" class="modal-backdrop modal-backdrop--center" @click.self="selectedAvatar = null">
         <div class="avatar-modal">
           <div class="avatar-modal-img-wrap">
             <img :src="selectedAvatar.photo" :alt="selectedAvatar.name" class="avatar-modal-img"
@@ -285,6 +285,8 @@
               </div>
               <p class="intimacy-next">🎁 Next reward: {{ selectedAvatar.nextReward }}</p>
             </div>
+          </div>
+          <div class="avatar-modal-footer">
             <button
               class="start-chat-btn"
               :class="{ 'is-live': selectedAvatar.live }"
@@ -345,7 +347,7 @@
 
     <!-- ══ DAILY REWARD MODAL ══ -->
     <transition name="modal">
-      <div v-if="showDailyReward" class="modal-backdrop">
+      <div v-if="showDailyReward" class="modal-backdrop modal-backdrop--center">
         <div class="daily-modal">
           <h2 class="daily-title">Daily Login Bonus!</h2>
           <p class="daily-streak">Day 3 Streak!</p>
@@ -368,17 +370,21 @@ import { ref, computed, onMounted } from 'vue'
 const emit = defineEmits(['avatar-selected'])
 
 // ── Data ─────────────────────────────────────────────────────────────────────
-const AVATARS = [
-  { id: 10, name: '弥生みづき', age: 21, bio: 'Live Streamer. Voice/Text mode available.', photo: '/select/girl1.jpg', level: '50,000', location: 'Japan', tags: ['#Live', '#Cute', '#VoiceMode'], intimacy: 25, nextReward: 'Special Video', live: true },
-  { id: 11, name: 'Mina Girl',  age: 21, bio: 'Live Streamer. Voice/Text mode available.', photo: '/select/girl3.jpg', level: '50,000', location: 'Japan', tags: ['#Live', '#Cute', '#VoiceMode'], intimacy: 25, nextReward: 'Special Video', live: true },
-  { id: 1,  name: '瀬戸環奈',  age: 21, bio: 'Fashion Model. Loves Harajuku.', photo: 'https://lh3.googleusercontent.com/u/0/d/1KylTY0pRLLFViFJXcYfp_W4LTK83B8th?q=80&w=800', level: '380,921', location: 'Japan', tags: ['#Fashion', '#J CUP'], intimacy: 85, nextReward: 'Private Photos', live: false },
-  { id: 3,  name: '八掛海',    age: 24, bio: 'Photograph. Nature.', photo: 'https://lh3.googleusercontent.com/u/0/d/1uJUrYcs-M6ufcRsakiDtudQkFmhqI7wW?q=80&w=800', level: '380,921', location: 'Japan', tags: ['#Nature', '#野戰'], intimacy: 98, nextReward: 'Virtual Marriage', live: false },
-  { id: 4,  name: '小宵こなん', age: 20, bio: 'Art Student. Tea ceremonies.', photo: 'https://lh3.googleusercontent.com/u/0/d/1bGVGNc6z0HRQelZgDGIissDWoqZW_cYh?q=80&w=800', level: '335,964', location: 'Japan', tags: ['#Art', '#Cute'], intimacy: 40, nextReward: 'Video Calls', live: false },
-  { id: 5,  name: 'うんぱい',  age: 22, bio: 'Dancer and choreographer.', photo: 'https://upload.wikimedia.org/wikipedia/commons/thumb/7/75/Kindai_Mahjong_Tokonatsu_Festival_%28October_25%2C_2025%29IMG_9861.jpg/250px-Kindai_Mahjong_Tokonatsu_Festival_%28October_25%2C_2025%29IMG_9861.jpg', level: '150,876', location: 'Japan', tags: ['#Dance', '#KPop'], intimacy: 30, nextReward: 'Special Dance', live: false },
-  { id: 6,  name: 'Ak野々浦',  age: 20, bio: 'Traditional Japanese artist.', photo: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/b0/Trend_Girls_Photo_Session_%28May_4%2C_2025%29IMG_0693.jpg/250px-Trend_Girls_Photo_Session_%28May_4%2C_2025%29IMG_0693.jpg', level: '89,420', location: 'Japan', tags: ['#Art', '#Traditional'], intimacy: 25, nextReward: 'Tea Ceremony', live: false },
-  { id: 7,  name: '宮島めい',  age: 23, bio: 'Cafe owner, loves indie music.', photo: 'https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/Trend_Girls_Photo_Session_%28September_15%2C_2024%29IMG_9575.jpg/250px-Trend_Girls_Photo_Session_%28September_15%2C_2024%29IMG_9575.jpg', level: '45,000', location: 'Japan', tags: ['#Cafe', '#Music'], intimacy: 20, nextReward: 'Coffee Date', live: false },
-  { id: 8,  name: '橋本梨菜',  age: 23, bio: 'Cat Lover, loves indie music.', photo: 'https://lh3.googleusercontent.com/u/0/d/1GlvM9JCNo7FnY6W0-e1vamy21nYciVpC?q=80&w=800', level: '30,000', location: 'Japan', tags: ['#Cat', '#Sleep'], intimacy: 20, nextReward: 'Coffee Date', live: false }
+// Base fake avatars (IDs 1–9) kept locally
+const BASE_AVATARS = [
+  { id: 3,  name: '瀬戸環奈',  age: 21, bio: 'Fashion Model. Loves Harajuku.', photo: 'https://lh3.googleusercontent.com/u/0/d/1KylTY0pRLLFViFJXcYfp_W4LTK83B8th?q=80&w=800', level: '380,921', location: 'Japan', tags: ['#Fashion', '#J CUP'], intimacy: 85, nextReward: 'Private Photos', live: false },
+  { id: 4,  name: '八掛海',    age: 24, bio: 'Photograph. Nature.', photo: 'https://lh3.googleusercontent.com/u/0/d/1uJUrYcs-M6ufcRsakiDtudQkFmhqI7wW?q=80&w=800', level: '380,921', location: 'Japan', tags: ['#Nature', '#野戰'], intimacy: 98, nextReward: 'Virtual Marriage', live: false },
+  { id: 5,  name: '小宵こなん', age: 20, bio: 'Art Student. Tea ceremonies.', photo: 'https://lh3.googleusercontent.com/u/0/d/1bGVGNc6z0HRQelZgDGIissDWoqZW_cYh?q=80&w=800', level: '335,964', location: 'Japan', tags: ['#Art', '#Cute'], intimacy: 40, nextReward: 'Video Calls', live: false },
+  { id: 6,  name: 'うんぱい',  age: 22, bio: 'Dancer and choreographer.', photo: 'https://upload.wikimedia.org/wikipedia/commons/thumb/7/75/Kindai_Mahjong_Tokonatsu_Festival_%28October_25%2C_2025%29IMG_9861.jpg/250px-Kindai_Mahjong_Tokonatsu_Festival_%28October_25%2C_2025%29IMG_9861.jpg', level: '150,876', location: 'Japan', tags: ['#Dance', '#KPop'], intimacy: 30, nextReward: 'Special Dance', live: false },
+  { id: 7,  name: 'Ak野々浦',  age: 20, bio: 'Traditional Japanese artist.', photo: 'https://upload.wikimedia.org/wikipedia/commons/thumb/b/b0/Trend_Girls_Photo_Session_%28May_4%2C_2025%29IMG_0693.jpg/250px-Trend_Girls_Photo_Session_%28May_4%2C_2025%29IMG_0693.jpg', level: '89,420', location: 'Japan', tags: ['#Art', '#Traditional'], intimacy: 25, nextReward: 'Tea Ceremony', live: false },
+  { id: 8,  name: '宮島めい',  age: 23, bio: 'Cafe owner, loves indie music.', photo: 'https://upload.wikimedia.org/wikipedia/commons/thumb/4/47/Trend_Girls_Photo_Session_%28September_15%2C_2024%29IMG_9575.jpg/250px-Trend_Girls_Photo_Session_%28September_15%2C_2024%29IMG_9575.jpg', level: '45,000', location: 'Japan', tags: ['#Cafe', '#Music'], intimacy: 20, nextReward: 'Coffee Date', live: false },
+  { id: 9,  name: '橋本梨菜',  age: 23, bio: 'Cat Lover, loves indie music.', photo: 'https://lh3.googleusercontent.com/u/0/d/1GlvM9JCNo7FnY6W0-e1vamy21nYciVpC?q=80&w=800', level: '30,000', location: 'Japan', tags: ['#Cat', '#Sleep'], intimacy: 20, nextReward: 'Coffee Date', live: false }
 ]
+
+// Combined avatars used by UI: base fakes + config-driven avatars
+const avatars = ref([...BASE_AVATARS])
+const avatarsLoading = ref(false)
+const avatarsError = ref(null)
 
 const EVENTS = [
   { id: 1, title: 'Global Meet Up',  subtitle: 'Close Touch Your Fantasy!',       dateRange: 'Oct 24 - Nov 21', bannerUrl: 'https://lh3.googleusercontent.com/u/0/d/1V38oc1Ikw9E7S-2gdXVoggyqVfBrmtub', fullImageUrl: 'https://lh3.googleusercontent.com/u/0/d/1z2r2bkdz7B8xgj3g4YFL-D6zn-0wNYX4', description: 'Participate in the Grand Constellation Festival! Collect all 12 limited-edition mini-avatars. Each day offers new challenges and prizes.', participants: 12450 },
@@ -393,10 +399,10 @@ const FRIENDS = [
 ]
 
 // ── State ────────────────────────────────────────────────────────────────────
-const activeTab     = ref('home')
-const activeFilter  = ref('all')
-const searchQuery   = ref('')
-const userCoins     = ref(15000)
+const activeTab      = ref('home')
+const activeFilter   = ref('all')
+const searchQuery    = ref('')
+const userCoins      = ref(15000)
 const selectedAvatar = ref(null)
 const selectedEvent  = ref(null)
 const showTopUpModal  = ref(false)
@@ -417,14 +423,29 @@ const filters = [
 // ── Computed ─────────────────────────────────────────────────────────────────
 const filteredAvatars = computed(() => {
   const q = searchQuery.value.toLowerCase()
-  return AVATARS.filter(a => {
-    const matchFilter = activeFilter.value === 'all' || (activeFilter.value === 'live' && a.live)
-    const matchSearch = !q || a.name.toLowerCase().includes(q) || a.bio.toLowerCase().includes(q) || a.tags.some(t => t.toLowerCase().includes(q))
+  return avatars.value.filter(a => {
+    const name = (a.name || '').toString()
+    const bio = (a.bio || '').toString()
+    const tags = Array.isArray(a.tags) ? a.tags : []
+    const live = !!a.live
+
+    const matchFilter =
+      activeFilter.value === 'all' ||
+      (activeFilter.value === 'live' && live)
+
+    const matchSearch =
+      !q ||
+      name.toLowerCase().includes(q) ||
+      bio.toLowerCase().includes(q) ||
+      tags.some(t => (t || '').toString().toLowerCase().includes(q))
+
     return matchFilter && matchSearch
   })
 })
 
-const hostIntimacy = computed(() => AVATARS.filter(a => a.intimacy > 10))
+const hostIntimacy = computed(() =>
+  avatars.value.filter(a => typeof a.intimacy === 'number' && a.intimacy > 10)
+)
 
 // ── Methods ──────────────────────────────────────────────────────────────────
 function openAvatar(av) { selectedAvatar.value = av }
@@ -447,9 +468,43 @@ function claimDailyReward() {
   sessionStorage.setItem('dailyRewardClaimed', 'true')
 }
 
-onMounted(() => {
+// ── Lifecycle ────────────────────────────────────────────────────────────────
+onMounted(async () => {
+  // Daily reward
   if (!sessionStorage.getItem('dailyRewardClaimed')) {
     showDailyReward.value = true
+  }
+
+  // Load avatars from backend config and append to base avatars
+  try {
+    avatarsLoading.value = true
+    avatarsError.value = null
+
+    const resp = await fetch('/avatars')
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`)
+    }
+
+    const data = await resp.json()
+    if (data && Array.isArray(data.avatars)) {
+      const mapped = data.avatars
+        .filter(a => a && typeof a === 'object')
+        .map(a => ({
+          ...a,
+          // Normalize field names for UI
+          nextReward: a.nextReward ?? a.next_reward ?? a.next_reward,
+          live: a.live ?? true
+        }))
+      avatars.value = [...mapped, ...BASE_AVATARS]
+    } else {
+      throw new Error('Invalid avatars payload')
+    }
+  } catch (err) {
+    console.error('Failed to load avatars from /avatars:', err)
+    avatarsError.value = 'Failed to load avatars'
+    // Optional: keep avatars empty; UI will show "No avatars found"
+  } finally {
+    avatarsLoading.value = false
   }
 })
 </script>
@@ -472,6 +527,8 @@ onMounted(() => {
 .select-page {
   width: 100%;
   height: 100vh;
+  height: 100dvh; /* visible viewport on mobile, avoids bottom crop */
+  min-height: -webkit-fill-available;
   background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
   color: #f8fafc;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -586,8 +643,8 @@ onMounted(() => {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  /* safe-area for notched phones */
-  padding-bottom: env(safe-area-inset-bottom, 0);
+  /* extra padding so last content isn't hidden above tab bar / safe area */
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom, 0));
   scrollbar-width: thin;
   scrollbar-color: rgba(255,255,255,0.15) transparent;
   -webkit-overflow-scrolling: touch;
@@ -603,8 +660,8 @@ onMounted(() => {
   backdrop-filter: blur(20px);
   border-top: 1px solid rgba(255,255,255,0.08);
   box-shadow: 0 -4px 24px rgba(0,0,0,0.5);
-  /* safe-area padding for home-bar phones */
-  padding-bottom: env(safe-area-inset-bottom, 0);
+  /* safe-area padding for home-bar / notched phones (requires viewport-fit=cover) */
+  padding-bottom: max(0.25rem, env(safe-area-inset-bottom, 0));
   z-index: 30;
 }
 .bottom-tab-btn {
@@ -908,6 +965,7 @@ onMounted(() => {
   display: flex; align-items: flex-end; justify-content: center;
 }
 @media (min-width: 600px) { .modal-backdrop { align-items: center; } }
+.modal-backdrop--center { align-items: center; }
 
 /* Avatar modal */
 .avatar-modal {
@@ -917,7 +975,9 @@ onMounted(() => {
   overflow: hidden;
   border: 1px solid rgba(255,255,255,0.1);
   box-shadow: 0 -8px 40px rgba(0,0,0,0.6);
-  max-height: 90vh; display: flex; flex-direction: column;
+  max-height: 90vh;
+  max-height: 90dvh;
+  display: flex; flex-direction: column;
 }
 @media (min-width: 600px) { .avatar-modal { border-radius: 20px; } }
 
@@ -944,7 +1004,12 @@ onMounted(() => {
   padding: 0.25rem 0.65rem; border-radius: 999px;
 }
 
-.avatar-modal-body { padding: 1.1rem 1.25rem 1.5rem; overflow-y: auto; flex: 1; }
+.avatar-modal-body { padding: 1.1rem 1.25rem 1rem; overflow-y: auto; flex: 1; min-height: 0; }
+.avatar-modal-footer {
+  flex-shrink: 0;
+  padding: 0 1.25rem;
+  padding-bottom: calc(1.5rem + env(safe-area-inset-bottom, 0));
+}
 .modal-name-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.75rem; margin-bottom: 0.6rem; }
 .modal-name { font-size: 1.3rem; font-weight: 900; color: #f8fafc; }
 .modal-meta { font-size: 0.8rem; color: #64748b; margin-top: 0.2rem; }
@@ -1054,7 +1119,8 @@ onMounted(() => {
   box-shadow: 0 -8px 40px rgba(0,0,0,0.6);
 }
 @media (min-width: 600px) { .daily-modal { border-radius: 20px; } }
-.daily-title { font-size: 1.4rem; font-weight: 900; color: #818cf8; margin-bottom: 0.25rem; }
+.daily-title { font-size: 1.4rem; font-weight: 900; color: #818cf8; margin-bottom: 0.25rem; text-align: center; }
+@media (max-width: 599px) { .daily-title { text-align: center; display: block; width: 100%; } }
 .daily-streak { font-size: 0.85rem; color: #64748b; margin-bottom: 1rem; }
 .daily-gift { font-size: 4rem; margin-bottom: 1rem; animation: bounce 1s infinite; }
 @keyframes bounce { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
