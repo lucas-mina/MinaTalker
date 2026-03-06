@@ -5,6 +5,7 @@ export function useWebRTC(options = {}) {
   /** Prevents overlapping startPlay() calls (e.g. double-click / fast avatar switch). */
   let connectionInProgress = false
   const { onNotification } = options
+  const onWsMessage = typeof options.onWsMessage === 'function' ? options.onWsMessage : null
   
   /**
    * Build ICE servers from config.
@@ -150,6 +151,8 @@ export function useWebRTC(options = {}) {
               clearTimeout(timeout)
               ws.close()
               settle(reject, new Error(msg.error || 'signaling error'))
+            } else if (onWsMessage) {
+              onWsMessage(msg)
             }
           }
 
@@ -238,9 +241,24 @@ export function useWebRTC(options = {}) {
       video.srcObject = null
     }
   }
+
+  const getSignalingSocket = () => {
+    return pc?._signalingWs || null
+  }
+
+  const sendWsMessage = (payload) => {
+    const ws = getSignalingSocket()
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return false
+    }
+    ws.send(JSON.stringify(payload))
+    return true
+  }
   
   return {
     startPlay,
-    stopPlay
+    stopPlay,
+    getSignalingSocket,
+    sendWsMessage
   }
 }

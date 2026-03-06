@@ -17,39 +17,46 @@ def _get_avatar_stream(sessionid):
     return state.avatar_streams.get(sessionid)
 
 
+async def process_human_message(params: dict) -> dict:
+    """Process a human chat/echo request and return JSON-serializable result."""
+    sessionid = params.get('sessionid', 0)
+
+    avatar_stream = _get_avatar_stream(sessionid)
+    if avatar_stream is None:
+        logger.warning(f'[CHAT] session {sessionid} not found (already closed?)')
+        return {"code": -1, "msg": f"session {sessionid} not found"}
+
+    if params.get('interrupt'):
+        avatar_stream.flush_talk()
+
+    if params.get('type') == 'echo':
+        text = params.get('text', '')
+        avatar_stream.put_msg_txt(text)
+        response_text = text
+    elif params.get('type') == 'chat':
+        llm_config = state.config.llm if state.config else None
+        logger.info(f'[CHAT] LLM 配置: {llm_config}')
+        response_text = await asyncio.get_event_loop().run_in_executor(
+            None,
+            llm_response,
+            params.get('text', ''),
+            avatar_stream,
+            llm_config.api_key if llm_config else None,
+            llm_config.base_url if llm_config else "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            llm_config.model if llm_config else "qwen-plus"
+        )
+    else:
+        return {"code": -1, "msg": f"unknown type: {params.get('type')}"}
+
+    return {"code": 0, "msg": "ok", "response": response_text}
+
+
 async def human(request):
     """处理文本对话请求"""
     try:
         params = await request.json()
-        sessionid = params.get('sessionid', 0)
-
-        avatar_stream = _get_avatar_stream(sessionid)
-        if avatar_stream is None:
-            logger.warning(f'[CHAT] session {sessionid} not found (already closed?)')
-            return _json({"code": -1, "msg": f"session {sessionid} not found"})
-
-        if params.get('interrupt'):
-            avatar_stream.flush_talk()
-
-        if params['type'] == 'echo':
-            avatar_stream.put_msg_txt(params['text'])
-            response_text = params['text']
-        elif params['type'] == 'chat':
-            llm_config = state.config.llm if state.config else None
-            logger.info(f'[CHAT] LLM 配置: {llm_config}')
-            response_text = await asyncio.get_event_loop().run_in_executor(
-                None,
-                llm_response,
-                params['text'],
-                avatar_stream,
-                llm_config.api_key if llm_config else None,
-                llm_config.base_url if llm_config else "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                llm_config.model if llm_config else "qwen-plus"
-            )
-        else:
-            return _json({"code": -1, "msg": f"unknown type: {params.get('type')}"})
-
-        return _json({"code": 0, "msg": "ok", "response": response_text})
+        result = await process_human_message(params)
+        return _json(result)
 
     except Exception as e:
         logger.exception('exception:')

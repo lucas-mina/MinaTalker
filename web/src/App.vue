@@ -1,5 +1,22 @@
 <!-- Linly-Talker-Stream (https://github.com/Kedreamix/Linly-Talker-Stream). Copyright [Linly-talker-stream@kedreamix]. Apache-2.0. -->
 <template>
+  <!-- Password gate: show prompt until correct password entered -->
+  <div v-if="!passwordUnlocked" class="password-gate">
+    <div class="password-gate-box">
+      <p class="password-gate-label">Enter password</p>
+      <input
+        v-model="passwordInput"
+        type="password"
+        class="password-gate-input"
+        placeholder="Password"
+        @keydown.enter="submitPassword"
+      />
+      <p v-if="passwordError" class="password-gate-error">{{ passwordError }}</p>
+      <button type="button" class="password-gate-btn" @click="submitPassword">Enter</button>
+    </div>
+  </div>
+
+  <template v-else>
   <!-- Avatar selection screen -->
   <SelectView v-if="!avatarSelected" @avatar-selected="onAvatarSelected" />
 
@@ -244,6 +261,7 @@
       </transition-group>
     </div>
   </div>
+  </template>
 </template>
 
 <script setup>
@@ -275,6 +293,22 @@ marked.setOptions({
 })
 
 const { t, setLocale, loadLocale } = useI18n()
+
+// ── Password gate ────────────────────────────────────────────────────────────
+const PASSWORD = 'anim'
+const passwordUnlocked = ref(!!sessionStorage.getItem('mina_password_unlocked'))
+const passwordInput = ref('')
+const passwordError = ref('')
+
+function submitPassword() {
+  passwordError.value = ''
+  if (passwordInput.value === PASSWORD) {
+    sessionStorage.setItem('mina_password_unlocked', '1')
+    passwordUnlocked.value = true
+  } else {
+    passwordError.value = 'Incorrect password'
+  }
+}
 
 // ── Avatar selection gate ────────────────────────────────────────────────────
 const avatarSelected = ref(!!sessionStorage.getItem('selectedAvatar'))
@@ -349,6 +383,8 @@ const avatarSpeaking = ref(false)
 let avatarSpeakPollTimer = null
 let lastAvatarSpeakingAt = 0
 const avatarSpeakCooldownMs = 1200
+let wsHumanRequestSeq = 0
+const wsHumanPending = new Map()
 
 // 是否在界面中展示录制相关按钮
 const SHOW_RECORDING_UI = false
@@ -469,8 +505,19 @@ const getNotificationIcon = (type) => {
   }
 }
 
-const { startPlay, stopPlay } = useWebRTC({
-  onNotification: showNotification
+const handleWsMessage = (msg) => {
+  if (msg?.type !== 'human_response') return
+  const requestId = msg.request_id
+  if (!requestId || !wsHumanPending.has(requestId)) return
+  const pending = wsHumanPending.get(requestId)
+  wsHumanPending.delete(requestId)
+  clearTimeout(pending.timeoutId)
+  pending.resolve(msg)
+}
+
+const { startPlay, stopPlay, sendWsMessage, getSignalingSocket } = useWebRTC({
+  onNotification: showNotification,
+  onWsMessage: handleWsMessage
 })
 
 // 设置变更处理
@@ -813,6 +860,37 @@ const clearInput = () => {
   chatInput.value = ''
 }
 
+const sendHumanMessageViaWs = (payload) => {
+  const ws = getSignalingSocket()
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return null
+  }
+
+  const requestId = `${sessionId.value}-${Date.now()}-${++wsHumanRequestSeq}`
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      wsHumanPending.delete(requestId)
+      reject(new Error('WebSocket human request timeout'))
+    }, 30000)
+
+    wsHumanPending.set(requestId, { resolve, reject, timeoutId })
+    const sent = sendWsMessage({
+      type: 'human',
+      request_id: requestId,
+      message_type: payload.type,
+      text: payload.text,
+      interrupt: payload.interrupt ?? true,
+      sessionid: payload.sessionid
+    })
+
+    if (!sent) {
+      clearTimeout(timeoutId)
+      wsHumanPending.delete(requestId)
+      reject(new Error('WebSocket is not open'))
+    }
+  })
+}
+
 const sendChatMessage = async () => {
   if (!chatInput.value.trim()) return
   
@@ -829,28 +907,37 @@ const sendChatMessage = async () => {
   isThinking.value = true
   
   try {
-    const response = await fetch('/human', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: message,
-        type: 'chat',
-        interrupt: true,
-        sessionid: sessionId.value
-      })
-    })
-    
-    if (response.ok) {
-      const data = await response.json()
-      console.log('收到大模型回复:', data)
-      
-      // 显示大模型的回复
-      if (data.response || data.text) {
-        isThinking.value = false
-        addMessage(data.response || data.text, 'ai')
-      }
+    const payload = {
+      text: message,
+      type: 'chat',
+      interrupt: true,
+      sessionid: sessionId.value
+    }
+    let data = null
+    const wsResponse = await sendHumanMessageViaWs(payload)
+      .catch(() => null)
+
+    if (wsResponse) {
+      data = wsResponse
     } else {
-      throw new Error(`HTTP ${response.status}`)
+      const response = await fetch('/human', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+      data = await response.json()
+    }
+
+    console.log('收到大模型回复:', data)
+    if (data.code && data.code !== 0) {
+      throw new Error(data.msg || 'message failed')
+    }
+    if (data.response || data.text) {
+      isThinking.value = false
+      addMessage(data.response || data.text, 'ai')
     }
   } catch (error) {
     console.error('Failed to send message:', error)
@@ -872,16 +959,23 @@ const sendTTSMessage = async () => {
   const message = ttsInput.value
   
   try {
-    await fetch('/human', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        text: message,
-        type: 'echo',
-        interrupt: true,
-        sessionid: sessionId.value
+    const payload = {
+      text: message,
+      type: 'echo',
+      interrupt: true,
+      sessionid: sessionId.value
+    }
+    const wsResponse = await sendHumanMessageViaWs(payload)
+      .catch(() => null)
+    if (!wsResponse) {
+      await fetch('/human', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
       })
-    })
+    } else if (wsResponse.code && wsResponse.code !== 0) {
+      throw new Error(wsResponse.msg || 'TTS request failed')
+    }
     
     addMessage(`已发送朗读请求：${message.substring(0, 50)}${message.length > 50 ? '...' : ''}`, 'system')
     ttsInput.value = ''
@@ -940,26 +1034,34 @@ const { startRecognition, stopRecognition, isSupported, updateSettings } = useSp
       isThinking.value = true
       
       try {
-        const response = await fetch('/human', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            text: text,
-            type: 'chat',
-            interrupt: true,
-            sessionid: sessionId.value
+        const payload = {
+          text: text,
+          type: 'chat',
+          interrupt: true,
+          sessionid: sessionId.value
+        }
+        let data = null
+        const wsResponse = await sendHumanMessageViaWs(payload).catch(() => null)
+        if (wsResponse) {
+          data = wsResponse
+        } else {
+          const response = await fetch('/human', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
           })
-        })
-        
-        if (response.ok) {
-          const data = await response.json()
-          console.log('收到大模型回复:', data)
-          
-          // 显示大模型的回复
-          if (data.response || data.text) {
-            isThinking.value = false
-            addMessage(data.response || data.text, 'ai')
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`)
           }
+          data = await response.json()
+        }
+        console.log('收到大模型回复:', data)
+        if (data.code && data.code !== 0) {
+          throw new Error(data.msg || 'voice message failed')
+        }
+        if (data.response || data.text) {
+          isThinking.value = false
+          addMessage(data.response || data.text, 'ai')
         }
         } catch (error) {
         console.error('Failed to send voice message:', error)
@@ -1560,6 +1662,11 @@ function _applyViewportOffset() {
 }
 
 onUnmounted(() => {
+  wsHumanPending.forEach(({ reject, timeoutId }) => {
+    clearTimeout(timeoutId)
+    reject(new Error('component unmounted'))
+  })
+  wsHumanPending.clear()
   serverAsrLoopActive = false
   stopAvatarSpeakingPoll()
   if (sherpaVadSession) {
@@ -1664,6 +1771,69 @@ body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: #000;
   color: var(--text-primary);
+}
+
+/* ── Password gate ── */
+.password-gate {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.password-gate-box {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 2rem;
+  min-width: 280px;
+  box-shadow: var(--shadow-lg);
+}
+
+.password-gate-label {
+  margin-bottom: 0.75rem;
+  font-size: 1rem;
+  color: var(--text-primary);
+}
+
+.password-gate-input {
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  font-size: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  margin-bottom: 0.5rem;
+}
+
+.password-gate-input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.password-gate-error {
+  color: var(--danger);
+  font-size: 0.875rem;
+  margin-bottom: 0.5rem;
+}
+
+.password-gate-btn {
+  width: 100%;
+  padding: 0.6rem 1rem;
+  font-size: 1rem;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.password-gate-btn:hover {
+  background: var(--primary-dark);
 }
 
 /* ── Full-screen page ── */

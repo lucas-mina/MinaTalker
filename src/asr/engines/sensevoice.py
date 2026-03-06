@@ -91,15 +91,20 @@ class SenseVoiceASR(BaseASR):
         model_path = self._resolve_model_path(self.model_name)
         logger.info(f"[SenseVoice] Loading model from: {model_path}")
         try:
-            self.model = AutoModel(
-                model=model_path,
-                trust_remote_code=True,
+            common_kwargs = {
+                "model": model_path,
+                # Avoid update checks at startup and keep startup deterministic.
+                "disable_update": True,
+                # Use local/built-in implementation first to avoid remote import failures
+                # like "No module named 'model'" when local checkpoints are present.
+                "trust_remote_code": False,
                 # Disable FunASR's built-in VAD/punc pipelines — we handle VAD
                 # ourselves with SileroVAD and don't need punctuation restoration here.
-                vad_model=None,
-                punc_model=None,
-                device=self.device,
-            )
+                "vad_model": None,
+                "punc_model": None,
+                "device": self.device,
+            }
+            self.model = AutoModel(**common_kwargs)
             logger.info("[SenseVoice] Model loaded successfully")
         except Exception as exc:
             logger.error(f"[SenseVoice] Failed to load model: {exc}")

@@ -15,6 +15,7 @@ from src.server.state import state
 from src.server.utils import randN
 from src.config.loader import resolve_avatar_prompt_file, load_avatar_entries
 from src.llm.service import remove_session as remove_llm_session
+from src.server.routes.chat import process_human_message
 
 # ------------------------------------------------------------------
 # WS signaling protocol
@@ -292,6 +293,22 @@ async def ws_signaling(request):
                     logger.info("ws_signaling: received bye from %s (session=%s)", peer_addr, sessionid)
                     await _send({"type": "bye"})
                     break
+
+                elif msg_type == "human":
+                    # Handle chat/echo over the same WebSocket channel after signaling.
+                    request_id = data.get("request_id")
+                    try:
+                        params = {
+                            "sessionid": sessionid or data.get("sessionid", 0),
+                            "text": data.get("text", ""),
+                            "type": data.get("message_type", "chat"),
+                            "interrupt": bool(data.get("interrupt", True)),
+                        }
+                        result = await process_human_message(params)
+                        await _send({"type": "human_response", "request_id": request_id, **result})
+                    except Exception as e:
+                        logger.exception("ws_signaling: human failed: %s", e)
+                        await _send({"type": "human_response", "request_id": request_id, "code": -1, "msg": str(e)})
 
                 else:
                     await _send({"type": "error", "error": f"unknown message type: {msg_type!r}"})

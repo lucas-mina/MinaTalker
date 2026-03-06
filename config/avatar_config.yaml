@@ -16,3 +16,37 @@ avatars:
     model_avatar_id: wav2lip_avatar1
     model_avatar_id_ex: wav2lip_avatar1_ex
     elevenlabs_voice_id: iZTnOiLNxroAzRmv4oht 
+
+  - id: 11
+    key: ling
+    name: Ling
+    age: 21
+    bio: Live Streamer. Voice/Text mode available.
+    photo: /avatar/ling.jpg
+    level: "50,000"
+    location: Japan
+    tags: ["#Live", "#Cute", "#VoiceMode"]
+    intimacy: 25
+    next_reward: Special Video
+    live: true
+    prompt_file: prompt_ling.txt
+    model_avatar_id: wav2lip_avatar2
+    model_avatar_id_ex: wav2lip_avatar2_ex
+    elevenlabs_voice_id: 2i18D06hiNneeQUJHlvO 
+
+  - id: 12
+    key: bubu
+    name: BuBu
+    age: 21
+    bio: Live Streamer. Voice/Text mode available.
+    photo: /avatar/bubu.jpg
+    level: "50,000"
+    location: Japan
+    tags: ["#Live", "#Cute", "#VoiceMode"]
+    intimacy: 25
+    next_reward: Special Video
+    live: true
+    prompt_file: prompt_bubu.txt
+    model_avatar_id: wav2lip_avatar3
+    model_avatar_id_ex: wav2lip_avatar3_ex
+    elevenlabs_voice_id: unnC8e1CNCugbFO9kmXh 
