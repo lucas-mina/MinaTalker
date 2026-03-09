@@ -77,6 +77,7 @@ class ElevenLabsTTS(BaseTTS):
 
     def txt_to_audio(self, msg: tuple[str, dict]):
         text, textevent = msg
+        logger.info("elevenlabs producing audio with voice_id=%s", self.voice_id)
         self._stream_tts(self._stream_audio(text), msg)
 
     def _stream_tts(self, audio_stream: Iterator[bytes], msg: tuple[str, dict]):

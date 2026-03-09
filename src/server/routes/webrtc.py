@@ -23,12 +23,14 @@ from src.server.routes.chat import process_human_message
 # Client → Server messages:
 #   { "type": "offer",     "sdp": "<sdp>", "avatar_id": <int|null> }
 #   { "type": "candidate", "candidate": "<sdpMid>", "sdpMid": "<mid>", "sdpMLineIndex": <int> }
+#   { "type": "is_speaking" }   # optional status query on existing WS
 #   { "type": "ping" }
 #   { "type": "bye" }
 #
 # Server → Client messages:
 #   { "type": "answer",    "sdp": "<sdp>", "sessionid": <int> }
 #   { "type": "candidate", "candidate": "<sdpMid>", "sdpMid": "<mid>", "sdpMLineIndex": <int> }
+#   { "type": "speaking_state", "sessionid": <int>, "speaking": <bool> }
 #   { "type": "pong" }
 #   { "type": "error",     "error": "<message>" }
 #   { "type": "bye" }
@@ -202,11 +204,20 @@ async def ws_signaling(request):
     # Per-connection mutable state
     pc: RTCPeerConnection | None = None
     sessionid: int | None = None
+    speaking_task: asyncio.Task | None = None
+    last_speaking_state: bool | None = None
 
     async def _cleanup(reason: str = ""):
-        nonlocal pc, sessionid
+        nonlocal pc, sessionid, speaking_task
         if reason:
             logger.info("ws_signaling: cleanup — %s (session=%s)", reason, sessionid)
+        if speaking_task is not None:
+            speaking_task.cancel()
+            try:
+                await speaking_task
+            except asyncio.CancelledError:
+                pass
+            speaking_task = None
         if sessionid is not None:
             state.remove_session(sessionid)
             remove_llm_session(sessionid)
@@ -224,8 +235,32 @@ async def ws_signaling(request):
             except Exception:
                 pass
 
+    async def _send_speaking_state(force: bool = False):
+        nonlocal last_speaking_state
+        if sessionid is None:
+            return
+        avatar_stream = state.avatar_streams.get(sessionid)
+        if avatar_stream is None:
+            return
+        speaking = bool(avatar_stream.is_speaking())
+        if force or last_speaking_state is None or speaking != last_speaking_state:
+            last_speaking_state = speaking
+            await _send({
+                "type": "speaking_state",
+                "sessionid": sessionid,
+                "speaking": speaking,
+            })
+
+    async def _speaking_state_loop(bound_sessionid: int):
+        try:
+            while not ws.closed and sessionid == bound_sessionid:
+                await _send_speaking_state()
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            pass
+
     async def _handle_offer(data: dict):
-        nonlocal pc, sessionid
+        nonlocal pc, sessionid, speaking_task, last_speaking_state
 
         sdp = data.get("sdp")
         if not sdp:
@@ -239,8 +274,17 @@ async def ws_signaling(request):
         result, new_pc = await handle_offer(sdp, "offer", data.get("avatar_id"))
         sessionid = result["sessionid"]
         pc = new_pc
+        last_speaking_state = None
 
         await _send({"type": "answer", **result})
+        await _send_speaking_state(force=True)
+        if speaking_task is not None:
+            speaking_task.cancel()
+            try:
+                await speaking_task
+            except asyncio.CancelledError:
+                pass
+        speaking_task = asyncio.create_task(_speaking_state_loop(sessionid))
         logger.info("ws_signaling: offer handled, session=%s", sessionid)
 
     async def _handle_candidate(data: dict):
@@ -288,6 +332,9 @@ async def ws_signaling(request):
 
                 elif msg_type == "ping":
                     await _send({"type": "pong"})
+
+                elif msg_type == "is_speaking":
+                    await _send_speaking_state(force=True)
 
                 elif msg_type == "bye":
                     logger.info("ws_signaling: received bye from %s (session=%s)", peer_addr, sessionid)

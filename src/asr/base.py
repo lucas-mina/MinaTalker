@@ -70,9 +70,7 @@ class BaseASR(ABC):
             Dict 包含识别结果
         """
         # 延迟加载模型，避免启动时耗时/占用显存
-        if not self._initialized:
-            self._load_model()
-            self._initialized = True
+        self.ensure_initialized()
         
         # 统一转成临时文件，方便不同引擎复用文件接口
         temp_audio_path = None
@@ -90,6 +88,13 @@ class BaseASR(ABC):
                     os.unlink(temp_audio_path)
                 except Exception as e:
                     logger.warning(f'[ASR] 清理临时文件失败: {e}')
+
+    def ensure_initialized(self):
+        """Ensure ASR model is loaded exactly once."""
+        if self._initialized:
+            return
+        self._load_model()
+        self._initialized = True
     
     def _save_temp_audio(self, audio_bytes: bytes) -> str:
         """

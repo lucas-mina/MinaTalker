@@ -22,6 +22,7 @@ import torch.multiprocessing as mp
 from src.utils.logging import logger
 from src.config.loader import load_config, list_all_avatar_model_ids
 from src.avatars.factory import prepare_avatar_model
+from src.asr import get_asr_engine
 from src.server.state import state
 from src.server.server import create_app, run_server
 
@@ -78,6 +79,23 @@ def main():
     logger.info(f"正在加载模型类型: {state.config.model.type}")
     state.model, state.avatar = prepare_avatar_model(state.config)
     logger.info("模型加载完成")
+
+    # 预热 ASR，避免首个 /asr 请求在实时检测中触发模型加载卡顿
+    asr_cfg = state.config.asr if state.config else None
+    asr_mode = str(getattr(asr_cfg, "mode", "server")).lower()
+    if asr_mode in ("server", "auto"):
+        try:
+            asr_engine = get_asr_engine(
+                asr_type=getattr(asr_cfg, "type", "sensevoice"),
+                model_size=getattr(asr_cfg, "model_size", "base"),
+                device=getattr(asr_cfg, "device", "auto"),
+                model_name=getattr(asr_cfg, "model_name", None),
+            )
+            logger.info("[ASR] 预热开始: type=%s, mode=%s", getattr(asr_cfg, "type", "sensevoice"), asr_mode)
+            asr_engine.ensure_initialized()
+            logger.info("[ASR] 预热完成")
+        except Exception:
+            logger.exception("[ASR] 预热失败，将在首次识别时重试加载。")
     
     # 创建并运行应用
     app = create_app()

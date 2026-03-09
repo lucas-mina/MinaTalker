@@ -381,6 +381,7 @@ const shouldAutoConnectAfterAvatar = ref(false)
 const asrModeFromServer = ref('browser')
 const avatarSpeaking = ref(false)
 let avatarSpeakPollTimer = null
+let avatarSpeakWsReady = false
 let lastAvatarSpeakingAt = 0
 const avatarSpeakCooldownMs = 1200
 let wsHumanRequestSeq = 0
@@ -506,13 +507,24 @@ const getNotificationIcon = (type) => {
 }
 
 const handleWsMessage = (msg) => {
-  if (msg?.type !== 'human_response') return
-  const requestId = msg.request_id
-  if (!requestId || !wsHumanPending.has(requestId)) return
-  const pending = wsHumanPending.get(requestId)
-  wsHumanPending.delete(requestId)
-  clearTimeout(pending.timeoutId)
-  pending.resolve(msg)
+  if (msg?.type === 'speaking_state') {
+    avatarSpeakWsReady = true
+    const speaking = !!msg.speaking
+    avatarSpeaking.value = speaking
+    if (speaking) {
+      lastAvatarSpeakingAt = Date.now()
+    }
+    return
+  }
+
+  if (msg?.type === 'human_response') {
+    const requestId = msg.request_id
+    if (!requestId || !wsHumanPending.has(requestId)) return
+    const pending = wsHumanPending.get(requestId)
+    wsHumanPending.delete(requestId)
+    clearTimeout(pending.timeoutId)
+    pending.resolve(msg)
+  }
 }
 
 const { startPlay, stopPlay, sendWsMessage, getSignalingSocket } = useWebRTC({
@@ -1146,24 +1158,17 @@ const interruptCurrentSpeech = async () => {
 }
 
 const startAvatarSpeakingPoll = () => {
-  if (avatarSpeakPollTimer) return
-  avatarSpeakPollTimer = setInterval(async () => {
-    if (!sessionId.value || !isConnected.value) return
-    try {
-      const resp = await fetch('/is_speaking', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionid: sessionId.value })
-      })
-      if (!resp.ok) return
-      const data = await resp.json()
-      const speaking = !!data?.data
-      avatarSpeaking.value = speaking
-      if (speaking) {
-        lastAvatarSpeakingAt = Date.now()
-      }
-    } catch (_) {}
-  }, 300)
+  avatarSpeakWsReady = false
+  if (avatarSpeakPollTimer) {
+    clearInterval(avatarSpeakPollTimer)
+    avatarSpeakPollTimer = null
+  }
+
+  const wsSent = sendWsMessage({ type: 'is_speaking', sessionid: sessionId.value })
+  if (!wsSent) {
+    console.warn('WebSocket is unavailable for speaking_state; skip HTTP polling fallback')
+    return
+  }
 }
 
 const stopAvatarSpeakingPoll = () => {
@@ -1171,6 +1176,7 @@ const stopAvatarSpeakingPoll = () => {
     clearInterval(avatarSpeakPollTimer)
     avatarSpeakPollTimer = null
   }
+  avatarSpeakWsReady = false
   avatarSpeaking.value = false
 }
 
