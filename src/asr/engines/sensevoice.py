@@ -16,10 +16,15 @@ Config example (config.yaml):
       model_name: "iic/SenseVoiceSmall"   # local path or hub ID
       language: auto                       # zh | en | ja | ko | yue | auto
       device: auto
+      # Optional SenseVoice tuning:
+      sensevoice_use_itn: true             # inverse text normalisation
+      sensevoice_batch_size_s: 60         # batch long audio by seconds (optional)
+      sensevoice_merge_vad: false         # merge VAD segments (optional)
+      sensevoice_merge_length_s: 15       # min merge length in seconds (optional)
 """
 
 import re
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 import torch
 
@@ -52,9 +57,16 @@ class SenseVoiceASR(BaseASR):
 
     Loads SenseVoiceSmall either from a local directory or a
     ModelScope hub ID. Strips emotion/event tags from the output.
+    Supports config-driven options: use_itn, batch_size_s, merge_vad, merge_length_s.
     """
 
-    def __init__(self, config=None, model_name: str = "iic/SenseVoiceSmall", device: str = "auto"):
+    def __init__(
+        self,
+        config=None,
+        model_name: str = "iic/SenseVoiceSmall",
+        device: str = "auto",
+        language: Optional[str] = None,
+    ):
         """
         Args:
             config: global config object (optional)
@@ -63,6 +75,7 @@ class SenseVoiceASR(BaseASR):
                         Pass a local path such as "./models/iic/SenseVoiceSmall"
                         to use a cached copy.
             device: 'auto' | 'cpu' | 'cuda'
+            language: initial language (zh | en | ja | ko | yue | auto). If None, uses config or "zh".
         """
         super().__init__(config)
         self.model_name = model_name
@@ -71,7 +84,13 @@ class SenseVoiceASR(BaseASR):
         else:
             self.device = device
         self.model = None
-        logger.info(f"[SenseVoice] model_name={model_name}, device={self.device}")
+        if language is not None:
+            self.language = _LANG_MAP.get(language, language)
+        elif config and getattr(config, "asr", None):
+            cfg_lang = getattr(config.asr, "language", None)
+            if cfg_lang:
+                self.language = _LANG_MAP.get(cfg_lang, cfg_lang)
+        logger.info(f"[SenseVoice] model_name={model_name}, device={self.device}, language={self.language}")
 
     # ------------------------------------------------------------------
     # BaseASR interface
@@ -133,6 +152,25 @@ class SenseVoiceASR(BaseASR):
 
         return model_name  # fall through to hub download
 
+    def _get_sensevoice_options(self) -> Dict[str, Any]:
+        """Build generate() kwargs from config (SenseVoice-specific options)."""
+        opts = {
+            "use_itn": True,
+            "ban_emo_unk": True,
+        }
+        if not self.config or not getattr(self.config, "asr", None):
+            return opts
+        asr = self.config.asr
+        if getattr(asr, "sensevoice_use_itn", True) is not None:
+            opts["use_itn"] = bool(getattr(asr, "sensevoice_use_itn", True))
+        if getattr(asr, "sensevoice_batch_size_s", None) is not None:
+            opts["batch_size_s"] = int(asr.sensevoice_batch_size_s)
+        if getattr(asr, "sensevoice_merge_vad", None) is not None:
+            opts["merge_vad"] = bool(asr.sensevoice_merge_vad)
+        if getattr(asr, "sensevoice_merge_length_s", None) is not None:
+            opts["merge_length_s"] = float(asr.sensevoice_merge_length_s)
+        return opts
+
     def _transcribe(self, audio_path: str) -> Dict[str, Any]:
         """
         Run SenseVoice inference on a WAV file.
@@ -144,13 +182,11 @@ class SenseVoiceASR(BaseASR):
             dict with keys: text, language
         """
         lang = _LANG_MAP.get(self.language, "auto")
+        gen_kwargs = self._get_sensevoice_options()
+        gen_kwargs["input"] = audio_path
+        gen_kwargs["language"] = lang
 
-        result = self.model.generate(
-            input=audio_path,
-            language=lang,
-            use_itn=True,        # inverse text normalisation (numbers, dates, etc.)
-            ban_emo_unk=True,    # suppress <|UNKNOWN|> emotion tag
-        )
+        result = self.model.generate(**gen_kwargs)
 
         if result and len(result) > 0:
             raw_text = result[0].get("text", "")

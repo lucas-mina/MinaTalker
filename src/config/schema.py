@@ -203,9 +203,14 @@ class ASRConfig:
     type: str = "sensevoice"  # whisper | funasr | sensevoice (仅当 mode=server 时使用)
     model_size: str = "base"  # tiny | base | small | medium | large (仅 whisper 使用)
     model_name: str = "iic/SenseVoiceSmall"    # model name / local path for funasr/sensevoice engines
-    language: str = "auto"   # zh | en | auto
+    language: str = "auto"   # zh | en | ja | ko | yue | auto (sensevoice: auto = 自动检测)
     device: str = "auto"   # auto | cpu | cuda
     vad: VADConfig = field(default_factory=VADConfig)
+    # SenseVoice 增强选项 (仅 type=sensevoice 时生效)
+    sensevoice_use_itn: bool = True       # 逆文本规范化 (数字、日期等)
+    sensevoice_batch_size_s: Optional[int] = None   # 长音频按秒分批，None=默认
+    sensevoice_merge_vad: Optional[bool] = None     # 合并 VAD 片段 (None=默认)
+    sensevoice_merge_length_s: Optional[float] = None  # 合并最短时长(秒)，与 merge_vad 配合
 
 
 @dataclass

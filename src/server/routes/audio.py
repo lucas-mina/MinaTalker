@@ -93,10 +93,12 @@ async def asr(request):
             asr_config = state.config.asr if state.config else None
             
             asr_engine = get_asr_engine(
+                config=state.config,
                 asr_type=asr_config.type if asr_config else "sensevoice",
                 model_size=asr_config.model_size if asr_config else "base",
                 device=asr_config.device if asr_config else "auto",
                 model_name=asr_config.model_name if asr_config and asr_config.model_name else None,
+                language=asr_config.language if asr_config else None,
             )
             
             configured_language = asr_config.language if asr_config else "zh"

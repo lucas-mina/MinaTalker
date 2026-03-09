@@ -39,6 +39,10 @@ asr:
   model_size: base  # tiny | base | small | medium | large (仅 whisper 使用)
   language: auto  # zh | en | auto
   device: auto  # auto | cpu | cuda
+   # SenseVoice 最佳设置（按段输入）
+  sensevoice_use_itn: true           # 数字、日期等逆文本规范化，输出更可读
+  sensevoice_merge_vad: false        # 客户端已按段发送，不合并片段，低延迟
+  # sensevoice_batch_size_s 不设：每请求为一段，用模型默认即可
   vad:
     enabled: false       # client-side Silero VAD is enabled; disable backend VAD to avoid double gating/delay
     threshold: 0.5       # from other project: speaking_threshold

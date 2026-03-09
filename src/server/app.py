@@ -86,10 +86,12 @@ def main():
     if asr_mode in ("server", "auto"):
         try:
             asr_engine = get_asr_engine(
+                config=state.config,
                 asr_type=getattr(asr_cfg, "type", "sensevoice"),
                 model_size=getattr(asr_cfg, "model_size", "base"),
                 device=getattr(asr_cfg, "device", "auto"),
                 model_name=getattr(asr_cfg, "model_name", None),
+                language=getattr(asr_cfg, "language", None),
             )
             logger.info("[ASR] 预热开始: type=%s, mode=%s", getattr(asr_cfg, "type", "sensevoice"), asr_mode)
             asr_engine.ensure_initialized()
