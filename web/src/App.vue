@@ -1003,6 +1003,9 @@ let audioChunks = []
 let asrUploadQueue = Promise.resolve()
 let serverAsrStream = null
 let serverAsrLoopActive = false
+let serverAsrWs = null
+let serverAsrPendingChunks = []
+let serverAsrWsSending = false
 let sherpaVadSession = null
 let sherpaVadErrorShown = false
 const sherpaVadMinSpeechMs = isMobileClient ? 250 : 180
@@ -1085,14 +1088,34 @@ const { startRecognition, stopRecognition, isSupported, updateSettings } = useSp
   }
 })
 
-const sendAudioChunkToServer = async (audioBlob, filename = 'voice.webm') => {
-  if (!audioBlob || audioBlob.size <= 0 || !sessionId.value) return
+const handleAsrResult = (data) => {
+  if (data.code !== 0) {
+    if (data.msg) showNotification(data.msg, 'error')
+    return
+  }
+  if (data.silent) return
+  if (data.partial && !data.text) return
+  if (!data.text) return
+  addMessage(data.text, 'user')
+  if (data.response) {
+    addMessage(data.response, 'ai')
+  }
+}
 
+/** @param {Int16Array} pcm - 16-bit PCM from VAD; sampleRate usually 16000 */
+const sendAudioChunkToServer = async (pcm, sampleRate = 16000) => {
+  if (!pcm || pcm.length === 0 || !sessionId.value) return
+  if (serverAsrWs && serverAsrWs.readyState === WebSocket.OPEN) {
+    const pcmBlob = new Blob([pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength)])
+    serverAsrPendingChunks.push(pcmBlob)
+    if (!serverAsrWsSending) sendNextAsrChunk()
+    return
+  }
+  const wavBlob = pcm16ToWavBlob(pcm, sampleRate)
   const formData = new FormData()
-  formData.append('file', audioBlob, filename)
+  formData.append('file', wavBlob, 'voice.wav')
   formData.append('sessionid', sessionId.value)
   formData.append('language', appSettings.value.voiceLanguage || 'auto')
-
   try {
     const response = await fetch('/asr', {
       method: 'POST',
@@ -1102,20 +1125,32 @@ const sendAudioChunkToServer = async (audioBlob, filename = 'voice.webm') => {
       console.error('ASR 识别失败:', response.status)
       return
     }
-
     const data = await response.json()
-    if (data.silent) return
-    if (data.partial) return
-    if (!data.text) return
-
-    addMessage(data.text, 'user')
-    if (data.response) {
-      addMessage(data.response, 'ai')
-    }
+    handleAsrResult(data)
   } catch (error) {
     console.error('ASR 请求失败:', error)
     showNotification(t('notifications.voiceRequestFailed'), 'error')
   }
+}
+
+const sendNextAsrChunk = () => {
+  if (!serverAsrWs || serverAsrWs.readyState !== WebSocket.OPEN || serverAsrPendingChunks.length === 0) {
+    serverAsrWsSending = false
+    return
+  }
+  serverAsrWsSending = true
+  const blob = serverAsrPendingChunks.shift()
+  blob.arrayBuffer().then((ab) => {
+    if (serverAsrWs && serverAsrWs.readyState === WebSocket.OPEN) {
+      serverAsrWs.send(ab)
+    } else {
+      serverAsrWsSending = false
+    }
+  }).catch((err) => {
+    console.error('ASR WS send error:', err)
+    serverAsrWsSending = false
+    sendNextAsrChunk()
+  })
 }
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
@@ -1298,6 +1333,32 @@ const startServerAsrLoop = async () => {
   try {
     serverAsrLoopActive = true
     isRecordingVoice.value = true
+    serverAsrPendingChunks = []
+    serverAsrWsSending = false
+    const asrWsScheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    serverAsrWs = new WebSocket(`${asrWsScheme}//${location.host}/asr/ws`)
+    serverAsrWs.onopen = () => {
+      serverAsrWs.send(JSON.stringify({
+        type: 'config',
+        sessionid: sessionId.value,
+        language: appSettings.value.voiceLanguage || 'auto',
+        sample_rate: 16000
+      }))
+    }
+    serverAsrWs.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data)
+        handleAsrResult(data)
+      } catch (_) {}
+      sendNextAsrChunk()
+    }
+    serverAsrWs.onerror = () => {
+      console.warn('[ASR] WebSocket error')
+    }
+    serverAsrWs.onclose = () => {
+      serverAsrWs = null
+      serverAsrWsSending = false
+    }
     sherpaVadErrorShown = false
     sherpaVadCalibrationUntil = Date.now() + sherpaVadCalibrationMs
     sherpaVadNoiseFloorRms = 0
@@ -1345,11 +1406,10 @@ const startServerAsrLoop = async () => {
         })
         if (!isSherpaSegmentValid(audio, sampleRate)) return
 
-        const wavBlob = pcm16ToWavBlob(audio, sampleRate)
         asrUploadQueue = asrUploadQueue
           .then(async () => {
             await interruptCurrentSpeech()
-            await sendAudioChunkToServer(wavBlob, 'voice.wav')
+            await sendAudioChunkToServer(audio, sampleRate)
           })
           .catch((err) => {
             console.error('ASR 上传队列异常:', err)
@@ -1384,6 +1444,12 @@ const startServerAsrLoop = async () => {
     )
   } finally {
     serverAsrLoopActive = false
+    if (serverAsrWs) {
+      serverAsrWs.close()
+      serverAsrWs = null
+    }
+    serverAsrPendingChunks = []
+    serverAsrWsSending = false
     if (sherpaVadSession) {
       await sherpaVadSession.stop()
       sherpaVadSession = null
@@ -1469,6 +1535,12 @@ const stopVoiceRecording = async ({ submitAudio = true } = {}) => {
   
   if (asrModeFromServer.value === 'server') {
     serverAsrLoopActive = false
+    if (serverAsrWs) {
+      serverAsrWs.close()
+      serverAsrWs = null
+    }
+    serverAsrPendingChunks = []
+    serverAsrWsSending = false
     if (sherpaVadSession) {
       await sherpaVadSession.stop()
       sherpaVadSession = null
@@ -1674,6 +1746,12 @@ onUnmounted(() => {
   })
   wsHumanPending.clear()
   serverAsrLoopActive = false
+  if (serverAsrWs) {
+    serverAsrWs.close()
+    serverAsrWs = null
+  }
+  serverAsrPendingChunks = []
+  serverAsrWsSending = false
   stopAvatarSpeakingPoll()
   if (sherpaVadSession) {
     sherpaVadSession.stop().catch(() => {})

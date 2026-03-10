@@ -1,5 +1,6 @@
 """音频相关路由"""
 import json
+import struct
 from aiohttp import web
 import asyncio
 import re
@@ -7,6 +8,30 @@ import re
 from src.llm.service import llm_response
 from src.utils.logging import logger
 from src.server.state import state
+
+
+def _pcm16_to_wav_bytes(pcm_bytes: bytes, sample_rate: int = 16000, channels: int = 1) -> bytes:
+    """Wrap raw PCM 16-bit mono bytes in a minimal WAV header (44 bytes)."""
+    data_size = len(pcm_bytes)
+    byte_rate = sample_rate * channels * 2
+    block_align = channels * 2
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        36 + data_size,
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,
+        channels,
+        sample_rate,
+        byte_rate,
+        block_align,
+        16,
+        b"data",
+        data_size,
+    )
+    return header + pcm_bytes
 
 _ASR_PENDING_TEXT: dict[int, str] = {}
 _ASR_SILENCE_STREAK: dict[int, int] = {}
@@ -48,6 +73,110 @@ def _client_lang_to_whisper(client_lang: str) -> str:
     return "auto"
 
 
+async def run_asr_on_audio(filebytes: bytes, sessionid: int, client_lang: str | None) -> dict:
+    """
+    Shared ASR logic: VAD + transcribe + optional LLM. Used by both HTTP /asr and WebSocket /asr/ws.
+    Returns a dict suitable for JSON response: code, msg, optional text, response, partial, final, silent.
+    """
+    from src.asr import get_asr_engine
+
+    asr_config = state.config.asr if state.config else None
+    asr_engine = get_asr_engine(
+        config=state.config,
+        asr_type=asr_config.type if asr_config else "sensevoice",
+        model_size=asr_config.model_size if asr_config else "base",
+        device=asr_config.device if asr_config else "auto",
+        model_name=asr_config.model_name if asr_config and asr_config.model_name else None,
+        language=asr_config.language if asr_config else None,
+    )
+    configured_language = asr_config.language if asr_config else "zh"
+    configured_type = asr_config.type if asr_config else "sensevoice"
+    if configured_type == "sensevoice" and str(configured_language).lower() == "auto":
+        language = "auto"
+    elif client_lang and str(client_lang).strip():
+        language = _client_lang_to_whisper(str(client_lang).strip())
+    else:
+        language = configured_language
+    asr_engine.set_language(language)
+
+    vad_config = getattr(asr_config, "vad", None)
+    vad_enabled = getattr(vad_config, "enabled", True)
+    if vad_enabled:
+        from src.asr.vad import get_vad_engine
+        vad = get_vad_engine(device=asr_config.device if asr_config else "auto")
+        threshold = getattr(vad_config, "threshold", 0.5)
+        min_speech_ms = getattr(vad_config, "min_speech_ms", 250)
+        min_silence_ms = getattr(vad_config, "min_silence_ms", 100)
+        speech_pad_ms = getattr(vad_config, "speech_pad_ms", 30)
+        loop = asyncio.get_event_loop()
+        has_speech = await loop.run_in_executor(
+            None, vad.has_speech, filebytes, threshold, min_speech_ms, min_silence_ms, speech_pad_ms
+        )
+        if not has_speech:
+            pending_text = _ASR_PENDING_TEXT.get(sessionid, "").strip()
+            if not pending_text:
+                _ASR_SILENCE_STREAK[sessionid] = 0
+                return {"code": 0, "silent": True, "msg": "no speech detected"}
+            silence_streak = _ASR_SILENCE_STREAK.get(sessionid, 0) + 1
+            _ASR_SILENCE_STREAK[sessionid] = silence_streak
+            if silence_streak < _MIN_SILENCE_CHUNKS_TO_FLUSH:
+                return {
+                    "code": 0, "msg": "ok", "partial": True, "silent": True,
+                    "silence_streak": silence_streak, "text": pending_text,
+                }
+            if len(pending_text) < _MIN_PENDING_TEXT_LEN_TO_FLUSH:
+                _ASR_PENDING_TEXT[sessionid] = ""
+                _ASR_SILENCE_STREAK[sessionid] = 0
+                return {"code": 0, "silent": True, "msg": "noise filtered"}
+            llm_config = state.config.llm if state.config else None
+            avatar_stream = state.avatar_streams.get(sessionid)
+            if avatar_stream is None:
+                return {"code": -1, "msg": f"sessionid {sessionid} not found"}
+            llm_text = await loop.run_in_executor(
+                None,
+                llm_response,
+                pending_text,
+                avatar_stream,
+                llm_config.api_key if llm_config else None,
+                llm_config.base_url if llm_config else "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                llm_config.model if llm_config else "qwen-plus",
+            )
+            _ASR_PENDING_TEXT[sessionid] = ""
+            _ASR_SILENCE_STREAK[sessionid] = 0
+            return {"code": 0, "msg": "ok", "text": pending_text, "response": llm_text, "final": True}
+        _ASR_SILENCE_STREAK[sessionid] = 0
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, asr_engine.transcribe, filebytes)
+    text = result.get("text", "").strip()
+    if not text:
+        return {
+            "code": 0, "msg": "ok", "partial": True,
+            "text": _ASR_PENDING_TEXT.get(sessionid, "").strip(),
+        }
+    pending_text = _append_asr_text(_ASR_PENDING_TEXT.get(sessionid, ""), text).strip()
+    _ASR_PENDING_TEXT[sessionid] = pending_text
+    should_finalize = (not vad_enabled) or bool(_SENTENCE_END_RE.search(pending_text))
+    if not should_finalize:
+        return {"code": 0, "msg": "ok", "partial": True, "text": pending_text}
+    llm_config = state.config.llm if state.config else None
+    avatar_stream = state.avatar_streams.get(sessionid)
+    if avatar_stream is None:
+        return {"code": -1, "msg": f"sessionid {sessionid} not found"}
+    llm_text = await loop.run_in_executor(
+        None,
+        llm_response,
+        pending_text,
+        avatar_stream,
+        llm_config.api_key if llm_config else None,
+        llm_config.base_url if llm_config else "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        llm_config.model if llm_config else "qwen-plus",
+    )
+    _ASR_PENDING_TEXT[sessionid] = ""
+    _ASR_SILENCE_STREAK[sessionid] = 0
+    return {"code": 0, "msg": "ok", "text": pending_text, "response": llm_text, "final": True}
+
+
 async def humanaudio(request):
     """处理音频文件上传"""
     try:
@@ -75,204 +204,84 @@ async def humanaudio(request):
 
 
 async def asr(request):
-    """ASR 语音识别接口：将音频转换为文本，然后调用 LLM 进行对话"""
+    """ASR 语音识别接口（HTTP）：将音频转换为文本，然后调用 LLM 进行对话"""
     try:
         form = await request.post()
-        sessionid = int(form.get('sessionid', 0))
+        sessionid = int(form.get("sessionid", 0))
         fileobj = form["file"]
         filebytes = fileobj.file.read()
-        # Optional: client sends recognition language (e.g. zh-CN, en-US) so server uses it
         client_lang = form.get("language") or form.get("lang")
         if isinstance(client_lang, bytes):
             client_lang = client_lang.decode("utf-8", errors="replace")
 
-        # ASR/LLM 调用在同一流程中，失败时返回可读错误
-        from src.asr import get_asr_engine
-        
+        logger.info(f"[ASR] 开始识别音频，sessionid={sessionid}, language={client_lang or 'default'}")
         try:
-            asr_config = state.config.asr if state.config else None
-            
-            asr_engine = get_asr_engine(
-                config=state.config,
-                asr_type=asr_config.type if asr_config else "sensevoice",
-                model_size=asr_config.model_size if asr_config else "base",
-                device=asr_config.device if asr_config else "auto",
-                model_name=asr_config.model_name if asr_config and asr_config.model_name else None,
-                language=asr_config.language if asr_config else None,
-            )
-            
-            configured_language = asr_config.language if asr_config else "zh"
-            configured_type = asr_config.type if asr_config else "sensevoice"
-            # For SenseVoice multilingual mode, honor server-side auto detection.
-            # This avoids stale client UI language (e.g. zh-CN) forcing recognition.
-            if configured_type == "sensevoice" and str(configured_language).lower() == "auto":
-                language = "auto"
-            elif client_lang and str(client_lang).strip():
-                language = _client_lang_to_whisper(str(client_lang).strip())
-            else:
-                language = configured_language
-            asr_engine.set_language(language)
-            
-            logger.info(f'[ASR] 开始识别音频，sessionid={sessionid}, language={language}')
-            loop = asyncio.get_event_loop()
-
-            # --- SileroVAD gate: skip ASR if no speech is detected ---
-            vad_config = getattr(asr_config, 'vad', None)
-            vad_enabled = getattr(vad_config, 'enabled', True)
-            if vad_enabled:
-                from src.asr.vad import get_vad_engine
-                vad = get_vad_engine(device=asr_config.device if asr_config else "auto")
-                threshold = getattr(vad_config, 'threshold', 0.5)
-                min_speech_ms = getattr(vad_config, 'min_speech_ms', 250)
-                min_silence_ms = getattr(vad_config, 'min_silence_ms', 100)
-                speech_pad_ms = getattr(vad_config, 'speech_pad_ms', 30)
-                has_speech = await loop.run_in_executor(
-                    None, vad.has_speech, filebytes, threshold, min_speech_ms, min_silence_ms, speech_pad_ms
-                )
-                if not has_speech:
-                    pending_text = _ASR_PENDING_TEXT.get(sessionid, "").strip()
-                    if not pending_text:
-                        _ASR_SILENCE_STREAK[sessionid] = 0
-                        logger.info('[VAD] No speech detected — skipping ASR')
-                        return web.Response(
-                            content_type="application/json",
-                            text=json.dumps({"code": 0, "silent": True, "msg": "no speech detected"}),
-                        )
-
-                    silence_streak = _ASR_SILENCE_STREAK.get(sessionid, 0) + 1
-                    _ASR_SILENCE_STREAK[sessionid] = silence_streak
-                    if silence_streak < _MIN_SILENCE_CHUNKS_TO_FLUSH:
-                        return web.Response(
-                            content_type="application/json",
-                            text=json.dumps(
-                                {
-                                    "code": 0,
-                                    "msg": "ok",
-                                    "partial": True,
-                                    "silent": True,
-                                    "silence_streak": silence_streak,
-                                    "text": pending_text,
-                                }
-                            ),
-                        )
-
-                    # Drop very short buffered noise instead of sending it to LLM.
-                    if len(pending_text) < _MIN_PENDING_TEXT_LEN_TO_FLUSH:
-                        logger.info('[ASR] Dropping short buffered text as noise: %r', pending_text)
-                        _ASR_PENDING_TEXT[sessionid] = ""
-                        _ASR_SILENCE_STREAK[sessionid] = 0
-                        return web.Response(
-                            content_type="application/json",
-                            text=json.dumps({"code": 0, "silent": True, "msg": "noise filtered"}),
-                        )
-
-                    # End-of-utterance detected by sustained silence: flush buffered text to LLM.
-                    logger.info('[ASR] Sustained silence detected, flushing buffered sentence')
-                    llm_config = state.config.llm if state.config else None
-                    avatar_stream = state.avatar_streams.get(sessionid)
-                    if avatar_stream is None:
-                        return web.Response(
-                            content_type="application/json",
-                            text=json.dumps(
-                                {"code": -1, "msg": f"sessionid {sessionid} not found"}
-                            ),
-                            status=404
-                        )
-
-                    llm_text = await loop.run_in_executor(
-                        None,
-                        llm_response,
-                        pending_text,
-                        avatar_stream,
-                        llm_config.api_key if llm_config else None,
-                        llm_config.base_url if llm_config else "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                        llm_config.model if llm_config else "qwen-plus",
-                    )
-                    _ASR_PENDING_TEXT[sessionid] = ""
-                    _ASR_SILENCE_STREAK[sessionid] = 0
-                    return web.Response(
-                        content_type="application/json",
-                        text=json.dumps(
-                            {"code": 0, "msg": "ok", "text": pending_text, "response": llm_text, "final": True}
-                        ),
-                    )
-                else:
-                    _ASR_SILENCE_STREAK[sessionid] = 0
-            # -------------------------------------------------------------
-
-            result = await loop.run_in_executor(None, asr_engine.transcribe, filebytes)
-            text = result.get("text", "").strip()
-            
-            if not text:
-                return web.Response(
-                    content_type="application/json",
-                    text=json.dumps(
-                        {"code": 0, "msg": "ok", "partial": True, "text": _ASR_PENDING_TEXT.get(sessionid, "").strip()}
-                    ),
-                )
-            
-            logger.info(f'[ASR] 识别结果: {text}')
-
-            pending_text = _append_asr_text(_ASR_PENDING_TEXT.get(sessionid, ""), text).strip()
-            _ASR_PENDING_TEXT[sessionid] = pending_text
-            # If backend VAD is disabled, client-side VAD already segmented utterance.
-            # Treat each chunk as final to avoid waiting for punctuation.
-            should_finalize = (not vad_enabled) or bool(_SENTENCE_END_RE.search(pending_text))
-
-            if not should_finalize:
-                return web.Response(
-                    content_type="application/json",
-                    text=json.dumps(
-                        {"code": 0, "msg": "ok", "partial": True, "text": pending_text}
-                    ),
-                )
-
-            llm_config = state.config.llm if state.config else None
-            logger.info(f'[ASR] LLM 配置: {llm_config}')
-            avatar_stream = state.avatar_streams.get(sessionid)
-            if avatar_stream is None:
-                return web.Response(
-                    content_type="application/json",
-                    text=json.dumps(
-                        {"code": -1, "msg": f"sessionid {sessionid} not found"}
-                    ),
-                    status=404
-                )
-
-            llm_text = await loop.run_in_executor(
-                None,
-                llm_response,
-                pending_text,
-                avatar_stream,
-                llm_config.api_key if llm_config else None,
-                llm_config.base_url if llm_config else "https://dashscope.aliyuncs.com/compatible-mode/v1",
-                llm_config.model if llm_config else "qwen-plus",
-            )
-            logger.info(f'[ASR] LLM 回复: {llm_text}')
-            _ASR_PENDING_TEXT[sessionid] = ""
-            _ASR_SILENCE_STREAK[sessionid] = 0
-
+            result = await run_asr_on_audio(filebytes, sessionid, client_lang)
+            status = 404 if result.get("code") == -1 and "not found" in result.get("msg", "") else 200
             return web.Response(
                 content_type="application/json",
-                text=json.dumps(
-                    {"code": 0, "msg": "ok", "text": pending_text, "response": llm_text, "final": True}
-                ),
+                text=json.dumps(result),
+                status=status,
             )
-            
         except Exception as e:
-            logger.exception('[ASR] 语音识别失败:')
+            logger.exception("[ASR] 语音识别失败:")
             return web.Response(
                 content_type="application/json",
-                text=json.dumps(
-                    {"code": -1, "msg": f"语音识别失败: {str(e)}"}
-                ),
+                text=json.dumps({"code": -1, "msg": f"语音识别失败: {str(e)}"}),
             )
-            
     except Exception as e:
-        logger.exception('[ASR] ASR 接口异常:')
+        logger.exception("[ASR] ASR 接口异常:")
         return web.Response(
             content_type="application/json",
-            text=json.dumps(
-                {"code": -1, "msg": str(e)}
-            ),
+            text=json.dumps({"code": -1, "msg": str(e)}),
         )
+
+
+async def asr_ws(request):
+    """ASR WebSocket：接收 PCM 二进制块（16-bit mono），返回 JSON 识别结果（与 HTTP /asr 语义一致）"""
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    sessionid = 0
+    client_lang = None
+    sample_rate = 16000
+    config_received = False
+
+    try:
+        async for msg in ws:
+            if msg.type == web.WSMsgType.TEXT:
+                try:
+                    data = json.loads(msg.data)
+                    if data.get("type") == "config":
+                        sessionid = int(data.get("sessionid", 0))
+                        client_lang = data.get("language") or data.get("lang") or "auto"
+                        sample_rate = int(data.get("sample_rate", 16000)) or 16000
+                        config_received = True
+                        await ws.send_str(json.dumps({"code": 0, "msg": "config ok"}))
+                    else:
+                        await ws.send_str(json.dumps({"code": -1, "msg": "unknown message type"}))
+                except (json.JSONDecodeError, ValueError) as e:
+                    await ws.send_str(json.dumps({"code": -1, "msg": str(e)}))
+                continue
+            if msg.type == web.WSMsgType.BINARY:
+                if not config_received:
+                    await ws.send_str(json.dumps({"code": -1, "msg": "send config first"}))
+                    continue
+                pcm_bytes = msg.data
+                if not pcm_bytes:
+                    await ws.send_str(json.dumps({"code": 0, "msg": "ok", "partial": True, "text": ""}))
+                    continue
+                try:
+                    wav_bytes = _pcm16_to_wav_bytes(pcm_bytes, sample_rate=sample_rate)
+                    result = await run_asr_on_audio(wav_bytes, sessionid, client_lang)
+                    await ws.send_str(json.dumps(result))
+                except Exception as e:
+                    logger.exception("[ASR/WS] 识别异常:")
+                    await ws.send_str(json.dumps({"code": -1, "msg": str(e)}))
+                continue
+            if msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
+                break
+    except Exception as e:
+        logger.exception("[ASR/WS] WebSocket 异常:")
+    finally:
+        await ws.close()
+    return ws

@@ -30,6 +30,7 @@ def create_app():
     app.router.add_post("/human", routes.human)
     app.router.add_post("/humanaudio", routes.humanaudio)
     app.router.add_post("/asr", routes.asr)
+    app.router.add_get("/asr/ws", routes.asr_ws)
     app.router.add_post("/set_audiotype", routes.set_audiotype)
     app.router.add_post("/record", routes.record)
     app.router.add_post("/flower", routes.set_flower_mode)
