@@ -16,6 +16,7 @@ from src.server.utils import randN
 from src.config.loader import resolve_avatar_prompt_file, load_avatar_entries
 from src.llm.service import remove_session as remove_llm_session
 from src.server.routes.chat import process_human_message
+from src.server.routes.audio import run_asr_on_audio, _pcm16_to_wav_bytes
 
 # ------------------------------------------------------------------
 # WS signaling protocol
@@ -206,6 +207,11 @@ async def ws_signaling(request):
     sessionid: int | None = None
     speaking_task: asyncio.Task | None = None
     last_speaking_state: bool | None = None
+    # ASR over same WebSocket (like chat)
+    asr_config_received: bool = False
+    asr_sessionid: int = 0
+    asr_client_lang: str | None = None
+    asr_sample_rate: int = 16000
 
     async def _cleanup(reason: str = ""):
         nonlocal pc, sessionid, speaking_task
@@ -357,8 +363,31 @@ async def ws_signaling(request):
                         logger.exception("ws_signaling: human failed: %s", e)
                         await _send({"type": "human_response", "request_id": request_id, "code": -1, "msg": str(e)})
 
+                elif msg_type == "asr_config":
+                    asr_config_received = True
+                    asr_sessionid = int(data.get("sessionid", 0))
+                    asr_client_lang = data.get("language") or data.get("lang") or "auto"
+                    asr_sample_rate = int(data.get("sample_rate", 16000)) or 16000
+                    await _send({"type": "asr_config_ok", "code": 0, "msg": "config ok"})
+
                 else:
                     await _send({"type": "error", "error": f"unknown message type: {msg_type!r}"})
+
+            elif msg.type == WSMsgType.BINARY:
+                if not asr_config_received:
+                    await _send({"type": "asr_result", "code": -1, "msg": "send asr_config first"})
+                else:
+                    pcm_bytes = msg.data
+                    if not pcm_bytes:
+                        await _send({"type": "asr_result", "code": 0, "msg": "ok", "partial": True, "text": ""})
+                    else:
+                        try:
+                            wav_bytes = _pcm16_to_wav_bytes(pcm_bytes, sample_rate=asr_sample_rate)
+                            result = await run_asr_on_audio(wav_bytes, asr_sessionid, asr_client_lang)
+                            await _send({"type": "asr_result", **result})
+                        except Exception as e:
+                            logger.exception("ws_signaling: ASR failed: %s", e)
+                            await _send({"type": "asr_result", "code": -1, "msg": str(e)})
 
             elif msg.type == WSMsgType.PING:
                 # aiohttp handles pong automatically with autoping=True; nothing to do.

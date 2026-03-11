@@ -75,7 +75,7 @@ def _client_lang_to_whisper(client_lang: str) -> str:
 
 async def run_asr_on_audio(filebytes: bytes, sessionid: int, client_lang: str | None) -> dict:
     """
-    Shared ASR logic: VAD + transcribe + optional LLM. Used by both HTTP /asr and WebSocket /asr/ws.
+    Shared ASR logic: VAD + transcribe + optional LLM. Used by HTTP /asr and by /ws (ASR over same WebSocket as signaling/chat).
     Returns a dict suitable for JSON response: code, msg, optional text, response, partial, final, silent.
     """
     from src.asr import get_asr_engine
@@ -235,53 +235,3 @@ async def asr(request):
             content_type="application/json",
             text=json.dumps({"code": -1, "msg": str(e)}),
         )
-
-
-async def asr_ws(request):
-    """ASR WebSocket：接收 PCM 二进制块（16-bit mono），返回 JSON 识别结果（与 HTTP /asr 语义一致）"""
-    ws = web.WebSocketResponse()
-    await ws.prepare(request)
-    sessionid = 0
-    client_lang = None
-    sample_rate = 16000
-    config_received = False
-
-    try:
-        async for msg in ws:
-            if msg.type == web.WSMsgType.TEXT:
-                try:
-                    data = json.loads(msg.data)
-                    if data.get("type") == "config":
-                        sessionid = int(data.get("sessionid", 0))
-                        client_lang = data.get("language") or data.get("lang") or "auto"
-                        sample_rate = int(data.get("sample_rate", 16000)) or 16000
-                        config_received = True
-                        await ws.send_str(json.dumps({"code": 0, "msg": "config ok"}))
-                    else:
-                        await ws.send_str(json.dumps({"code": -1, "msg": "unknown message type"}))
-                except (json.JSONDecodeError, ValueError) as e:
-                    await ws.send_str(json.dumps({"code": -1, "msg": str(e)}))
-                continue
-            if msg.type == web.WSMsgType.BINARY:
-                if not config_received:
-                    await ws.send_str(json.dumps({"code": -1, "msg": "send config first"}))
-                    continue
-                pcm_bytes = msg.data
-                if not pcm_bytes:
-                    await ws.send_str(json.dumps({"code": 0, "msg": "ok", "partial": True, "text": ""}))
-                    continue
-                try:
-                    wav_bytes = _pcm16_to_wav_bytes(pcm_bytes, sample_rate=sample_rate)
-                    result = await run_asr_on_audio(wav_bytes, sessionid, client_lang)
-                    await ws.send_str(json.dumps(result))
-                except Exception as e:
-                    logger.exception("[ASR/WS] 识别异常:")
-                    await ws.send_str(json.dumps({"code": -1, "msg": str(e)}))
-                continue
-            if msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
-                break
-    except Exception as e:
-        logger.exception("[ASR/WS] WebSocket 异常:")
-    finally:
-        await ws.close()
-    return ws

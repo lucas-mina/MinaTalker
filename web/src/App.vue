@@ -524,6 +524,12 @@ const handleWsMessage = (msg) => {
     wsHumanPending.delete(requestId)
     clearTimeout(pending.timeoutId)
     pending.resolve(msg)
+    return
+  }
+
+  if (msg?.type === 'asr_result') {
+    handleAsrResult(msg)
+    sendNextAsrChunk()
   }
 }
 
@@ -1004,6 +1010,8 @@ let asrUploadQueue = Promise.resolve()
 let serverAsrStream = null
 let serverAsrLoopActive = false
 let serverAsrWs = null
+/** True when serverAsrWs is the shared /ws signaling socket (do not close it on ASR stop). */
+let serverAsrWsIsSignaling = false
 let serverAsrPendingChunks = []
 let serverAsrWsSending = false
 let sherpaVadSession = null
@@ -1335,29 +1343,19 @@ const startServerAsrLoop = async () => {
     isRecordingVoice.value = true
     serverAsrPendingChunks = []
     serverAsrWsSending = false
-    const asrWsScheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    serverAsrWs = new WebSocket(`${asrWsScheme}//${location.host}/asr/ws`)
-    serverAsrWs.onopen = () => {
-      serverAsrWs.send(JSON.stringify({
-        type: 'config',
+    serverAsrWsIsSignaling = false
+    const signalingWs = getSignalingSocket()
+    if (signalingWs && signalingWs.readyState === WebSocket.OPEN) {
+      serverAsrWs = signalingWs
+      serverAsrWsIsSignaling = true
+      sendWsMessage({
+        type: 'asr_config',
         sessionid: sessionId.value,
         language: appSettings.value.voiceLanguage || 'auto',
         sample_rate: 16000
-      }))
-    }
-    serverAsrWs.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data)
-        handleAsrResult(data)
-      } catch (_) {}
-      sendNextAsrChunk()
-    }
-    serverAsrWs.onerror = () => {
-      console.warn('[ASR] WebSocket error')
-    }
-    serverAsrWs.onclose = () => {
+      })
+    } else {
       serverAsrWs = null
-      serverAsrWsSending = false
     }
     sherpaVadErrorShown = false
     sherpaVadCalibrationUntil = Date.now() + sherpaVadCalibrationMs
@@ -1444,10 +1442,11 @@ const startServerAsrLoop = async () => {
     )
   } finally {
     serverAsrLoopActive = false
-    if (serverAsrWs) {
+    if (serverAsrWs && !serverAsrWsIsSignaling) {
       serverAsrWs.close()
-      serverAsrWs = null
     }
+    serverAsrWs = null
+    serverAsrWsIsSignaling = false
     serverAsrPendingChunks = []
     serverAsrWsSending = false
     if (sherpaVadSession) {
@@ -1535,10 +1534,11 @@ const stopVoiceRecording = async ({ submitAudio = true } = {}) => {
   
   if (asrModeFromServer.value === 'server') {
     serverAsrLoopActive = false
-    if (serverAsrWs) {
+    if (serverAsrWs && !serverAsrWsIsSignaling) {
       serverAsrWs.close()
-      serverAsrWs = null
     }
+    serverAsrWs = null
+    serverAsrWsIsSignaling = false
     serverAsrPendingChunks = []
     serverAsrWsSending = false
     if (sherpaVadSession) {
@@ -1746,10 +1746,11 @@ onUnmounted(() => {
   })
   wsHumanPending.clear()
   serverAsrLoopActive = false
-  if (serverAsrWs) {
+  if (serverAsrWs && !serverAsrWsIsSignaling) {
     serverAsrWs.close()
-    serverAsrWs = null
   }
+  serverAsrWs = null
+  serverAsrWsIsSignaling = false
   serverAsrPendingChunks = []
   serverAsrWsSending = false
   stopAvatarSpeakingPoll()
