@@ -31,7 +31,7 @@ from src.server.routes.audio import run_asr_on_audio, _pcm16_to_wav_bytes
 # Server → Client messages:
 #   { "type": "answer",    "sdp": "<sdp>", "sessionid": <int> }
 #   { "type": "candidate", "candidate": "<sdpMid>", "sdpMid": "<mid>", "sdpMLineIndex": <int> }
-#   { "type": "speaking_state", "sessionid": <int>, "speaking": <bool> }
+#   { "type": "speaking_state", "sessionid": <int>, "speaking": <bool>, "isEnd": <bool> }
 #   { "type": "pong" }
 #   { "type": "error",     "error": "<message>" }
 #   { "type": "bye" }
@@ -213,10 +213,24 @@ async def ws_signaling(request):
     asr_client_lang: str | None = None
     asr_sample_rate: int = 16000
 
+    async def _flush_speaking_end_if_needed():
+        """If client was last told speaking=true, emit speaking=false + isEnd before teardown or stream loss."""
+        nonlocal last_speaking_state
+        if ws.closed or sessionid is None or last_speaking_state is not True:
+            return
+        last_speaking_state = False
+        await _send({
+            "type": "speaking_state",
+            "sessionid": sessionid,
+            "speaking": False,
+            "isEnd": True,
+        })
+
     async def _cleanup(reason: str = ""):
         nonlocal pc, sessionid, speaking_task
         if reason:
             logger.info("ws_signaling: cleanup — %s (session=%s)", reason, sessionid)
+        await _flush_speaking_end_if_needed()
         if speaking_task is not None:
             speaking_task.cancel()
             try:
@@ -247,14 +261,19 @@ async def ws_signaling(request):
             return
         avatar_stream = state.avatar_streams.get(sessionid)
         if avatar_stream is None:
+            # Session/PC torn down (e.g. ICE failed) but WS still open — avoid stuck "speaking" on client.
+            await _flush_speaking_end_if_needed()
             return
         speaking = bool(avatar_stream.is_speaking())
+        prev_sent = last_speaking_state
         if force or last_speaking_state is None or speaking != last_speaking_state:
             last_speaking_state = speaking
+            is_end = prev_sent is True and speaking is False
             await _send({
                 "type": "speaking_state",
                 "sessionid": sessionid,
                 "speaking": speaking,
+                "isEnd": is_end,
             })
 
     async def _speaking_state_loop(bound_sessionid: int):
