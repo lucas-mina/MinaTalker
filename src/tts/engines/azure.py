@@ -33,6 +33,7 @@ class AzureTTS(BaseTTS):
 
     def txt_to_audio(self, msg: tuple[str, dict]):
         msg_text: str = msg[0]
+        textevent = msg[1] if len(msg) > 1 else {}
         result = self.speech_synthesizer.speak_text(msg_text)
 
         # 延迟指标
@@ -49,6 +50,23 @@ class AzureTTS(BaseTTS):
         logger.info(
             f"azure音频生成相关：首字节延迟: {fb_latency} ms, 完成延迟: {fin_latency} ms, result_id: {result.result_id}"
         )
+
+        # Drain any remainder from the callback buffer, then mark utterance end (align with other TTS engines).
+        while len(self.audio_buffer) >= self.CHUNK_SIZE:
+            chunk = self.audio_buffer[: self.CHUNK_SIZE]
+            self.audio_buffer = self.audio_buffer[self.CHUNK_SIZE :]
+            frame = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32767.0
+            self.parent.put_audio_frame(frame)
+        if len(self.audio_buffer) > 0:
+            pad = self.CHUNK_SIZE - len(self.audio_buffer)
+            chunk = self.audio_buffer + (b"\x00" * pad)
+            self.audio_buffer = b""
+            frame = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32767.0
+            self.parent.put_audio_frame(frame)
+        eventpoint = {"status": "end", "text": msg_text}
+        if textevent:
+            eventpoint.update(textevent)
+        self.parent.put_audio_frame(np.zeros(self.chunk, dtype=np.float32), eventpoint)
 
     # === 回调 ===
     def _on_synthesizing(self, evt: speechsdk.SpeechSynthesisEventArgs):

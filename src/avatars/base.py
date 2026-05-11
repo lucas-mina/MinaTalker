@@ -143,8 +143,31 @@ class BaseAvatar:
         for key in self.custom_index:
             self.custom_index[key]=0
 
-    def notify(self,eventpoint):
-        logger.info("notify:%s",eventpoint)
+    def notify(self, eventpoint):
+        logger.info("notify:%s", eventpoint)
+        # TTS engines mark the last chunk with status "end" (per msgqueue utterance), not is_speaking().
+        if not isinstance(eventpoint, dict) or eventpoint.get("status") != "end":
+            return
+        sid = getattr(self.config, "sessionid", None)
+        if sid is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        from src.server.state import state as _server_state
+
+        payload = {
+            "type": "speaking_state",
+            "sessionid": sid,
+            "speaking": False,
+            "isEnd": True,
+            "utteranceEnd": True,
+        }
+        text = eventpoint.get("text")
+        if text is not None:
+            payload["text"] = text
+        loop.create_task(_server_state.emit_signaling(sid, payload))
 
     def mirror_index(self,size, index):
         # 通过镜像索引实现正反往返播放

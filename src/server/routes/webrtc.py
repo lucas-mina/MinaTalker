@@ -31,7 +31,8 @@ from src.server.routes.audio import run_asr_on_audio, _pcm16_to_wav_bytes
 # Server → Client messages:
 #   { "type": "answer",    "sdp": "<sdp>", "sessionid": <int> }
 #   { "type": "candidate", "candidate": "<sdpMid>", "sdpMid": "<mid>", "sdpMLineIndex": <int> }
-#   { "type": "speaking_state", "sessionid": <int>, "speaking": <bool>, "isEnd": <bool> }
+#   { "type": "speaking_state", "sessionid": <int>, "speaking": <bool>, "isEnd": <bool>,
+#     "utteranceEnd"?: <bool>, "text"?: <str> }  # utteranceEnd=true: TTS last chunk (status end), not is_speaking()
 #   { "type": "pong" }
 #   { "type": "error",     "error": "<message>" }
 #   { "type": "bye" }
@@ -230,6 +231,9 @@ async def ws_signaling(request):
         nonlocal pc, sessionid, speaking_task
         if reason:
             logger.info("ws_signaling: cleanup — %s (session=%s)", reason, sessionid)
+        sid = sessionid
+        if sid is not None:
+            state.register_signaling_emitter(sid, None)
         await _flush_speaking_end_if_needed()
         if speaking_task is not None:
             speaking_task.cancel()
@@ -300,6 +304,14 @@ async def ws_signaling(request):
         sessionid = result["sessionid"]
         pc = new_pc
         last_speaking_state = None
+
+        async def _signaling_emit(payload: dict):
+            nonlocal last_speaking_state
+            await _send(payload)
+            if payload.get("utteranceEnd"):
+                last_speaking_state = False
+
+        state.register_signaling_emitter(sessionid, _signaling_emit)
 
         await _send({"type": "answer", **result})
         await _send_speaking_state(force=True)
