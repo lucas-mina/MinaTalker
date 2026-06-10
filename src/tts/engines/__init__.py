@@ -17,6 +17,8 @@ from .indextts2 import IndexTTS2
 from .xtts import XTTS
 from .azure import AzureTTS
 from .elevenlabs import ElevenLabsTTS
+from .inworld import InworldTTS
+from .minimax import MiniMaxTTS
 
 __all__ = [
     "BaseTTS",
@@ -32,4 +34,6 @@ __all__ = [
     "XTTS",
     "AzureTTS",
     "ElevenLabsTTS",
+    "InworldTTS",
+    "MiniMaxTTS",
 ]

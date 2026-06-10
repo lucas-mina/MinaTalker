@@ -4,9 +4,12 @@ import re
 import yaml
 from pathlib import Path
 from typing import Optional, Dict, Any
+from dataclasses import fields
+
 from .schema import (
     Config, AppConfig, ModelConfig, TTSConfig, ASRConfig, VADConfig, LLMConfig,
-    AudioConfig, VideoConfig, CustomVideoConfig, ERNeRfConfig, TalkingGaussianConfig
+    AudioConfig, VideoConfig, CustomVideoConfig, ERNeRfConfig, TalkingGaussianConfig,
+    WebRTCConfig, AgoraConfig,
 )
 
 
@@ -101,8 +104,26 @@ def dict_to_config(config_dict: Dict) -> Config:
     video_config = VideoConfig(**config_dict.get('video', {}))
     custom_video_config = CustomVideoConfig(**config_dict.get('custom_video', {}))
 
+    webrtc_allowed = {f.name for f in fields(WebRTCConfig)}
+    webrtc_raw = config_dict.get("webrtc") or {}
+    if not isinstance(webrtc_raw, dict):
+        webrtc_raw = {}
+    agora_raw = webrtc_raw.get("agora") or {}
+    if not isinstance(agora_raw, dict):
+        agora_raw = {}
+    agora_allowed = {f.name for f in fields(AgoraConfig)}
+    agora_kwargs = {k: v for k, v in agora_raw.items() if k in agora_allowed}
+    agora_config = AgoraConfig(**agora_kwargs)
+    webrtc_kwargs = {
+        k: v
+        for k, v in webrtc_raw.items()
+        if k in webrtc_allowed and k != "agora"
+    }
+    webrtc_config = WebRTCConfig(**webrtc_kwargs, agora=agora_config)
+
     return Config(
         app=app_config,
+        webrtc=webrtc_config,
         model=model_config,
         tts=tts_config,
         asr=asr_config,
@@ -113,7 +134,38 @@ def dict_to_config(config_dict: Dict) -> Config:
     )
 
 
-def resolve_avatar_prompt_file(avatar_id: int) -> Optional[str]:
+def catalog_avatar_ids_match(stored: Any, requested: Any) -> bool:
+    """
+    True if avatar_config.yaml entry ``id`` matches a client-supplied avatar_id.
+
+    Supports integer ids, UUID strings, other string ids, and JSON numeric strings
+    (e.g. YAML id 1 vs client "1").
+    """
+    if stored is None or requested is None:
+        return False
+    if stored == requested:
+        return True
+    sa = str(stored).strip()
+    sb = str(requested).strip()
+    if sa == sb:
+        return True
+    try:
+        return int(stored) == int(requested)
+    except (TypeError, ValueError):
+        return False
+
+
+def find_avatar_entry_by_catalog_id(
+    entries: list[Dict[str, Any]], avatar_id: Any
+) -> Optional[Dict[str, Any]]:
+    """Return the first avatar dict whose ``id`` matches ``avatar_id``, else None."""
+    for entry in entries:
+        if isinstance(entry, dict) and catalog_avatar_ids_match(entry.get("id"), avatar_id):
+            return entry
+    return None
+
+
+def resolve_avatar_prompt_file(avatar_id: Any) -> Optional[str]:
     """
     Look up the prompt_file for a given avatar id from avatar_config.yaml.
     Returns the prompt_file string, or None if not found.
@@ -124,12 +176,12 @@ def resolve_avatar_prompt_file(avatar_id: int) -> Optional[str]:
         return None
     avatar_data = load_yaml_config(avatar_config_path)
     for entry in avatar_data.get("avatars", []):
-        if entry.get("id") == avatar_id:
+        if isinstance(entry, dict) and catalog_avatar_ids_match(entry.get("id"), avatar_id):
             return entry.get("prompt_file")
     return None
 
 
-def resolve_avatar_flower_audiotype(avatar_id: int) -> Optional[str]:
+def resolve_avatar_flower_audiotype(avatar_id: Any) -> Optional[str]:
     """
     Look up the "flower" audiotype for a given avatar id from avatar_config.yaml.
     By convention we reuse the model_avatar_id_ex field as the audiotype key
@@ -144,13 +196,13 @@ def resolve_avatar_flower_audiotype(avatar_id: int) -> Optional[str]:
         return None
     avatar_data = load_yaml_config(avatar_config_path)
     for entry in avatar_data.get("avatars", []):
-        if entry.get("id") == avatar_id:
+        if isinstance(entry, dict) and catalog_avatar_ids_match(entry.get("id"), avatar_id):
             # Use model_avatar_id_ex as the custom audiotype identifier
             return entry.get("model_avatar_id_ex")
     return None
 
 
-def resolve_avatar_ex_model_id(avatar_id: int) -> Optional[str]:
+def resolve_avatar_ex_model_id(avatar_id: Any) -> Optional[str]:
     """
     Look up the extended/ex avatar model id (model_avatar_id_ex)
     for a given avatar id from avatar_config.yaml.
@@ -165,7 +217,7 @@ def resolve_avatar_ex_model_id(avatar_id: int) -> Optional[str]:
         return None
     avatar_data = load_yaml_config(avatar_config_path)
     for entry in avatar_data.get("avatars", []):
-        if entry.get("id") == avatar_id:
+        if isinstance(entry, dict) and catalog_avatar_ids_match(entry.get("id"), avatar_id):
             return entry.get("model_avatar_id_ex")
     return None
 

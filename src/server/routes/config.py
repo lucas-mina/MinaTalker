@@ -7,7 +7,17 @@ from src.server.state import state
 
 async def get_config(request):
     """Return public config the client needs (e.g. asr.mode to force server ASR)."""
-    payload = {"asr": {"mode": "server", "type": "sensevoice", "vad": {"enabled": True}}}
+    payload = {
+        "asr": {"mode": "server", "type": "sensevoice", "vad": {"enabled": True}},
+        "webrtc": {
+            "agora": {
+                "enabled": False,
+                "app_id": "",
+                "default_channel": "mina",
+                "token_expiration_seconds": 3600,
+            },
+        },
+    }
     if state.config and hasattr(state.config, "asr") and state.config.asr:
         asr_cfg = state.config.asr
         payload["asr"]["mode"] = getattr(asr_cfg, "mode", "browser")
@@ -16,6 +26,18 @@ async def get_config(request):
         payload["asr"]["vad"] = {
             "enabled": getattr(vad_cfg, "enabled", False),
         }
+    if state.config and getattr(state.config, "webrtc", None):
+        w = state.config.webrtc
+        ag = getattr(w, "agora", None)
+        if ag:
+            payload["webrtc"]["agora"] = {
+                "enabled": bool(getattr(ag, "enabled", False)),
+                "app_id": getattr(ag, "app_id", "") or "",
+                "default_channel": getattr(ag, "default_channel", "mina") or "mina",
+                "token_expiration_seconds": int(
+                    getattr(ag, "token_expiration_seconds", 3600) or 3600
+                ),
+            }
     return web.Response(
         content_type="application/json",
         text=json.dumps(payload),

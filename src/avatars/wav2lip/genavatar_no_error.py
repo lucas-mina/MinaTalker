@@ -10,7 +10,8 @@ import face_detection
 
 
 parser = argparse.ArgumentParser(description='Inference code to lip-sync videos in the wild using Wav2Lip models')
-parser.add_argument('--img_size', default=96, type=int)
+parser.add_argument('--img_size', default=256, type=int,
+					help='Face crop stored size (256 matches Wav2Lip; 96 saves disk but upscales at inference)')
 parser.add_argument('--avatar_id', default='wav2lip_avatar1', type=str)
 parser.add_argument('--video_path', default='', type=str)
 parser.add_argument('--nosmooth', default=False, action='store_true',
@@ -19,6 +20,8 @@ parser.add_argument('--pads', nargs='+', type=int, default=[0, 10, 0, 0],
 					help='Padding (top, bottom, left, right). Please adjust to include chin at least')
 parser.add_argument('--face_det_batch_size', type=int, 
 					help='Batch size for face detection', default=16)
+parser.add_argument('--draw_boxes', action='store_true',
+					help='Save frames with detector box + padded crop drawn (see box_debug/)')
 args = parser.parse_args()
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -59,6 +62,17 @@ def get_smoothened_boxes(boxes, T):
 		boxes[i] = np.mean(window, axis=0)
 	return boxes
 
+def _draw_box_overlay(bgr, raw_xyxy, pad_xyxy):
+	"""Draw raw detector rect (orange) and padded crop (green). xyxy = xmin, ymin, xmax, ymax."""
+	out = bgr.copy()
+	x1, y1, x2, y2 = [int(round(v)) for v in raw_xyxy]
+	cv2.rectangle(out, (x1, y1), (x2, y2), (0, 165, 255), 2)
+	cv2.putText(out, 'det', (x1, max(0, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 165, 255), 1, cv2.LINE_AA)
+	px1, py1, px2, py2 = [int(round(v)) for v in pad_xyxy]
+	cv2.rectangle(out, (px1, py1), (px2, py2), (0, 255, 0), 2)
+	cv2.putText(out, 'pad', (px1, min(out.shape[0] - 4, py2 + 14)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1, cv2.LINE_AA)
+	return out
+
 def face_detect(images):
 	detector = face_detection.FaceAlignment(face_detection.LandmarksType._2D, 
 											flip_input=False, device=device)
@@ -84,22 +98,25 @@ def face_detect(images):
 	if not predictions:
 		raise ValueError('Face not detected in any frame. Ensure the video contains a visible face.')
 
-	# Build boxes for valid frames only
-	results = []
+	# Raw detector boxes (xmin, ymin, xmax, ymax) and padded crops; smooth both when enabled.
+	raw_boxes = np.array([[r[0], r[1], r[2], r[3]] for r in predictions], dtype=np.float64)
+	padded_rows = []
 	for idx, rect in enumerate(predictions):
 		image = images[valid_indices[idx]]
 		y1 = max(0, rect[1] - pady1)
 		y2 = min(image.shape[0], rect[3] + pady2)
 		x1 = max(0, rect[0] - padx1)
 		x2 = min(image.shape[1], rect[2] + padx2)
-		results.append([x1, y1, x2, y2])
-
-	boxes = np.array(results)
+		padded_rows.append([x1, y1, x2, y2])
+	boxes = np.array(padded_rows, dtype=np.float64)
 	if not args.nosmooth:
-		boxes = get_smoothened_boxes(boxes, T=5)
+		boxes = get_smoothened_boxes(boxes.copy(), T=5)
+		if args.draw_boxes:
+			raw_boxes = get_smoothened_boxes(raw_boxes.copy(), T=5)
+
 	# Return (cropped_face, coords) only for frames where face was detected
 	results = [
-		[images[valid_indices[j]][y1:y2, x1:x2], (y1, y2, x1, x2)]
+		[images[valid_indices[j]][int(y1):int(y2), int(x1):int(x2)], (int(y1), int(y2), int(x1), int(x2))]
 		for j, (x1, y1, x2, y2) in enumerate(boxes)
 	]
 
@@ -108,14 +125,19 @@ def face_detect(images):
 			len(images) - len(valid_indices), len(valid_indices), len(images)))
 
 	del detector
-	return results, valid_indices 
+	overlay = (raw_boxes, boxes) if args.draw_boxes else None
+	return results, valid_indices, overlay
 
 if __name__ == "__main__":
     avatar_path = f"./data/avatars/{args.avatar_id}"
     full_imgs_path = f"{avatar_path}/full_imgs" 
     face_imgs_path = f"{avatar_path}/face_imgs" 
     coords_path = f"{avatar_path}/coords.pkl"
-    osmakedirs([avatar_path,full_imgs_path,face_imgs_path])
+    box_debug_path = f"{avatar_path}/box_debug"
+    prep_paths = [avatar_path, full_imgs_path, face_imgs_path]
+    if args.draw_boxes:
+        prep_paths.append(box_debug_path)
+    osmakedirs(prep_paths)
     print(args)
 
     #if os.path.isfile(args.video_path):
@@ -123,14 +145,19 @@ if __name__ == "__main__":
     input_img_list = sorted(glob(os.path.join(full_imgs_path, '*.[jpJP][pnPN]*[gG]')))
 
     frames = read_imgs(input_img_list)
-    face_det_results, valid_indices = face_detect(frames)
+    face_det_results, valid_indices, overlay = face_detect(frames)
     coord_list = []
     # Write only valid frames to full_imgs so full_imgs and face_imgs stay in sync for avatar load
     for idx, (frame, coords) in enumerate(face_det_results):
-        cv2.imwrite(f"{full_imgs_path}/{idx:08d}.png", frames[valid_indices[idx]])
+        src_full = frames[valid_indices[idx]]
+        cv2.imwrite(f"{full_imgs_path}/{idx:08d}.png", src_full)
         resized_crop_frame = cv2.resize(frame, (args.img_size, args.img_size))
         cv2.imwrite(f"{face_imgs_path}/{idx:08d}.png", resized_crop_frame)
         coord_list.append(coords)
+        if overlay is not None:
+            raw_boxes, pad_boxes = overlay
+            vis = _draw_box_overlay(src_full, raw_boxes[idx], pad_boxes[idx])
+            cv2.imwrite(f"{box_debug_path}/{idx:08d}.png", vis)
 
     with open(coords_path, 'wb') as f:
         pickle.dump(coord_list, f)

@@ -2,5 +2,6 @@
 
 from src.llm.base import BaseLLM
 from .openai import OpenAILLM
+from .internal import InternalLLM
 
-__all__ = ["BaseLLM", "OpenAILLM"]
+__all__ = ["BaseLLM", "OpenAILLM", "InternalLLM"]

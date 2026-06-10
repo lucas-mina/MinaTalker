@@ -11,7 +11,7 @@ from src.tts.base import BaseTTS, State
 from src.utils.logging import logger
 
 _OUTPUT_FORMAT = "pcm_16000"  # 16 kHz, 16-bit mono PCM — matches pipeline sample rate
-_MODEL_ID = "eleven_turbo_v2_5"
+_DEFAULT_MODEL_ID = "eleven_v3"
 
 
 class ElevenLabsTTS(BaseTTS):
@@ -42,6 +42,8 @@ class ElevenLabsTTS(BaseTTS):
                 "ElevenLabs voice ID is missing. Set tts.ref_file to a valid voice ID."
             )
         self._client = ElevenLabs(api_key=api_key)
+        model = (getattr(config.tts, "model", None) or _DEFAULT_MODEL_ID).strip()
+        self._model_id = model or _DEFAULT_MODEL_ID
         self._similarity_boost: float = getattr(config.tts, "similarity_boost", 0.75)
         self._style: float = getattr(config.tts, "style", 0.0)
         self._use_speaker_boost: bool = getattr(config.tts, "use_speaker_boost", True)
@@ -55,7 +57,7 @@ class ElevenLabsTTS(BaseTTS):
             audio_stream = self._client.text_to_speech.stream(
                 voice_id=self.voice_id,
                 text=text,
-                model_id=_MODEL_ID,
+                model_id=self._model_id,
                 output_format=_OUTPUT_FORMAT,
                 voice_settings=VoiceSettings(
                     similarity_boost=self._similarity_boost,

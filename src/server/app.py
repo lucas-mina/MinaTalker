@@ -21,6 +21,7 @@ import torch.multiprocessing as mp
 
 from src.utils.logging import logger
 from src.config.loader import load_config, list_all_avatar_model_ids
+from src.utils.aiortc_encoding_tune import apply_webrtc_outbound_video_bitrate
 from src.avatars.factory import prepare_avatar_model
 from src.asr import get_asr_engine
 from src.server.state import state
@@ -48,6 +49,14 @@ def main():
     # 加载配置
     state.config = load_config(config_file=args.config)
     logger.info(f"已加载配置: {state.config}")
+    _agora = getattr(getattr(state.config, "webrtc", None), "agora", None)
+    if _agora and getattr(_agora, "enabled", False):
+        logger.info(
+            "WebRTC: Agora enabled (app_id set=%s); skip aiortc outbound bitrate tuning",
+            bool(getattr(_agora, "app_id", None)),
+        )
+    else:
+        apply_webrtc_outbound_video_bitrate(state.config.webrtc)
     
     # 加载自定义视频配置
     state.config.customopt = []

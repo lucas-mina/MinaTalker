@@ -17,7 +17,7 @@
   </div>
 
   <template v-else>
-  <!-- Avatar selection screen -->
+  <!-- Core API sign-in is optional: Settings → Core API account (winwin unlocks full app access here). -->
   <SelectView v-if="!avatarSelected" @avatar-selected="onAvatarSelected" />
 
   <div v-else class="page-container">
@@ -53,12 +53,22 @@
           </div>
         </div>
         <div class="header-right">
+          <button
+            v-if="showCoreSignOut"
+            type="button"
+            class="btn-back-select"
+            :title="t('header.signOutCore')"
+            @click="handleSignOutCore"
+          >
+            <i class="bi bi-box-arrow-right"></i>
+          </button>
           <button class="btn-back-select" @click="goToSelect" :title="t('header.backToSelect')">
             <i class="bi bi-grid-3x3-gap-fill"></i>
           </button>
           <SettingsPanel 
             @settings-changed="onSettingsChanged" 
             @notification="showNotification"
+            @core-auth-changed="onCoreAuthChangedFromSettings"
           />
         </div>
       </div>
@@ -273,6 +283,13 @@ import { useWebRTC } from './composables/useWebRTC'
 import { useSpeechRecognition } from './composables/useSpeechRecognition'
 import { createSherpaVadSession } from './composables/useSherpaVad'
 import { useI18n } from './composables/useI18n'
+import {
+  isInternalAuthConfigured,
+  getStoredAccessToken,
+  startAuthRefreshLoop,
+  stopAuthRefreshLoop,
+  clearInternalAuth,
+} from './composables/useInternalAuth'
 import { marked } from 'marked'
 import hljs from 'highlight.js'
 
@@ -292,10 +309,10 @@ marked.setOptions({
   gfm: true
 })
 
-const { t, setLocale, loadLocale } = useI18n()
+const { t, setLocale, loadLocale, locale } = useI18n()
 
 // ── Password gate ────────────────────────────────────────────────────────────
-const PASSWORD = 'anim'
+const PASSWORD = 'winwin'
 const passwordUnlocked = ref(!!sessionStorage.getItem('mina_password_unlocked'))
 const passwordInput = ref('')
 const passwordError = ref('')
@@ -307,6 +324,30 @@ function submitPassword() {
     passwordUnlocked.value = true
   } else {
     passwordError.value = 'Incorrect password'
+  }
+}
+
+const hasCoreApiToken = ref(!!(isInternalAuthConfigured() && getStoredAccessToken()))
+const showCoreSignOut = computed(() => isInternalAuthConfigured() && hasCoreApiToken.value)
+
+function handleSignOutCore() {
+  stopAuthRefreshLoop()
+  clearInternalAuth()
+  hasCoreApiToken.value = false
+  showNotification(t('internalAuth.loggedOut'), 'info')
+}
+
+function onCoreAuthChangedFromSettings({ loggedIn }) {
+  if (loggedIn) {
+    hasCoreApiToken.value = true
+    startAuthRefreshLoop({
+      onRefreshFail: (err) => {
+        hasCoreApiToken.value = !!getStoredAccessToken()
+        showNotification(err?.message || t('internalAuth.refreshFailed'), 'error')
+      },
+    })
+  } else {
+    handleSignOutCore()
   }
 }
 
@@ -517,7 +558,7 @@ const handleWsMessage = (msg) => {
     return
   }
 
-  if (msg?.type === 'human_response') {
+  if (msg?.type === 'chat.response') {
     const requestId = msg.request_id
     if (!requestId || !wsHumanPending.has(requestId)) return
     const pending = wsHumanPending.get(requestId)
@@ -527,9 +568,40 @@ const handleWsMessage = (msg) => {
   }
 }
 
+const getInternalAccessToken = () => {
+  const fromSession = sessionStorage.getItem('internal_access_token')
+  if (fromSession && fromSession.trim()) return fromSession.trim()
+  const fromLocal = localStorage.getItem('internal_access_token')
+  if (fromLocal && fromLocal.trim()) return fromLocal.trim()
+  return ''
+}
+
+const withAuthHeaders = (headers = {}) => {
+  const token = getInternalAccessToken()
+  if (!token) return headers
+  return { ...headers, Authorization: `Bearer ${token}` }
+}
+
+/** Core/internal LLM thread id — sent on `/ws` query + offer; optional. */
+const internalLlmSessionId = ref('')
+try {
+  const stored = sessionStorage.getItem('internal_llm_session_id')
+  if (stored && String(stored).trim()) internalLlmSessionId.value = String(stored).trim()
+} catch (_) {}
+
 const { startPlay, stopPlay, sendWsMessage, getSignalingSocket } = useWebRTC({
   onNotification: showNotification,
-  onWsMessage: handleWsMessage
+  onWsMessage: handleWsMessage,
+  getAccessToken: getInternalAccessToken,
+  getSessionId: () => {
+    const v = String(internalLlmSessionId.value || '').trim()
+    if (v) return v
+    try {
+      return String(sessionStorage.getItem('internal_llm_session_id') || '').trim()
+    } catch {
+      return ''
+    }
+  },
 })
 
 // 设置变更处理
@@ -872,10 +944,28 @@ const clearInput = () => {
   chatInput.value = ''
 }
 
+/** Only non-empty `payload.lang` is sent (lang is optional end-to-end). */
+const optionalPayloadLang = (payload) => {
+  const raw = payload?.lang
+  if (raw == null) return undefined
+  const s = String(raw).trim()
+  return s || undefined
+}
+
+/** Core/internal LLM thread id — optional. Accepts ``session_id`` or non-numeric ``sessionid``. */
+const optionalPayloadSessionId = (payload) => {
+  let raw = payload?.session_id ?? payload?.sessionid
+  if (raw == null) return undefined
+  const s = String(raw).trim()
+  if (!s) return undefined
+  if (/^\d+$/.test(s)) return undefined
+  return s
+}
+
 const sendHumanMessageViaWs = (payload) => {
   const ws = getSignalingSocket()
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    return null
+    throw new Error('WebSocket is not connected')
   }
 
   const requestId = `${sessionId.value}-${Date.now()}-${++wsHumanRequestSeq}`
@@ -886,14 +976,21 @@ const sendHumanMessageViaWs = (payload) => {
     }, 30000)
 
     wsHumanPending.set(requestId, { resolve, reject, timeoutId })
-    const sent = sendWsMessage({
-      type: 'human',
+    const token = getInternalAccessToken()
+    const wsPayload = {
+      type: 'chat.request',
       request_id: requestId,
       message_type: payload.type,
       text: payload.text,
       interrupt: payload.interrupt ?? true,
-      sessionid: payload.sessionid
-    })
+      access_token: token || undefined,
+    }
+    const ol = optionalPayloadLang(payload)
+    if (ol) wsPayload.lang = ol
+    const osid = optionalPayloadSessionId(payload)
+    // Client alias ``sessionid`` for Core; server maps to LLM ``session_id`` (WebRTC room from WS context).
+    if (osid) wsPayload.sessionid = osid
+    const sent = sendWsMessage(wsPayload)
 
     if (!sent) {
       clearTimeout(timeoutId)
@@ -923,25 +1020,13 @@ const sendChatMessage = async () => {
       text: message,
       type: 'chat',
       interrupt: true,
-      sessionid: sessionId.value
+      sessionid: sessionId.value,
+      access_token: getInternalAccessToken() || undefined,
     }
+    const loc = (locale.value && String(locale.value).trim()) || ''
+    if (loc) payload.lang = loc
     let data = null
-    const wsResponse = await sendHumanMessageViaWs(payload)
-      .catch(() => null)
-
-    if (wsResponse) {
-      data = wsResponse
-    } else {
-      const response = await fetch('/human', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      })
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`)
-      }
-      data = await response.json()
-    }
+    data = await sendHumanMessageViaWs(payload)
 
     console.log('收到大模型回复:', data)
     if (data.code && data.code !== 0) {
@@ -975,17 +1060,11 @@ const sendTTSMessage = async () => {
       text: message,
       type: 'echo',
       interrupt: true,
-      sessionid: sessionId.value
+      sessionid: sessionId.value,
+      access_token: getInternalAccessToken() || undefined
     }
     const wsResponse = await sendHumanMessageViaWs(payload)
-      .catch(() => null)
-    if (!wsResponse) {
-      await fetch('/human', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      })
-    } else if (wsResponse.code && wsResponse.code !== 0) {
+    if (wsResponse.code && wsResponse.code !== 0) {
       throw new Error(wsResponse.msg || 'TTS request failed')
     }
     
@@ -1050,23 +1129,13 @@ const { startRecognition, stopRecognition, isSupported, updateSettings } = useSp
           text: text,
           type: 'chat',
           interrupt: true,
-          sessionid: sessionId.value
+          sessionid: sessionId.value,
+          access_token: getInternalAccessToken() || undefined,
         }
+        const loc = (locale.value && String(locale.value).trim()) || ''
+        if (loc) payload.lang = loc
         let data = null
-        const wsResponse = await sendHumanMessageViaWs(payload).catch(() => null)
-        if (wsResponse) {
-          data = wsResponse
-        } else {
-          const response = await fetch('/human', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-          })
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`)
-          }
-          data = await response.json()
-        }
+        data = await sendHumanMessageViaWs(payload)
         console.log('收到大模型回复:', data)
         if (data.code && data.code !== 0) {
           throw new Error(data.msg || 'voice message failed')
@@ -1092,10 +1161,13 @@ const sendAudioChunkToServer = async (audioBlob, filename = 'voice.webm') => {
   formData.append('file', audioBlob, filename)
   formData.append('sessionid', sessionId.value)
   formData.append('language', appSettings.value.voiceLanguage || 'auto')
+  const accessToken = getInternalAccessToken()
+  if (accessToken) formData.append('access_token', accessToken)
 
   try {
     const response = await fetch('/asr', {
       method: 'POST',
+      headers: withAuthHeaders(),
       body: formData
     })
     if (!response.ok) {
@@ -1147,11 +1219,14 @@ const applyAntiEchoVolume = () => {
 const interruptCurrentSpeech = async () => {
   if (!sessionId.value) return
   try {
-    await fetch('/interrupt_talk', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionid: sessionId.value })
+    const sent = sendWsMessage({
+      type: 'interrupt_talk',
+      sessionid: sessionId.value,
+      access_token: getInternalAccessToken() || undefined,
     })
+    if (!sent) {
+      throw new Error('WebSocket is not connected')
+    }
   } catch (error) {
     console.warn('中断旧语音失败:', error)
   }
@@ -1668,6 +1743,7 @@ function _applyViewportOffset() {
 }
 
 onUnmounted(() => {
+  stopAuthRefreshLoop()
   wsHumanPending.forEach(({ reject, timeoutId }) => {
     clearTimeout(timeoutId)
     reject(new Error('component unmounted'))
@@ -1730,6 +1806,16 @@ onMounted(async () => {
   }, 60000)
 
   applyAntiEchoVolume()
+
+  if (isInternalAuthConfigured() && getStoredAccessToken()) {
+    hasCoreApiToken.value = true
+    startAuthRefreshLoop({
+      onRefreshFail: (err) => {
+        hasCoreApiToken.value = !!getStoredAccessToken()
+        showNotification(err?.message || t('internalAuth.refreshFailed'), 'error')
+      },
+    })
+  }
 })
 </script>
 
@@ -1803,6 +1889,13 @@ body {
   margin-bottom: 0.75rem;
   font-size: 1rem;
   color: var(--text-primary);
+}
+
+.password-gate-subhint {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin: -0.35rem 0 0.75rem;
+  line-height: 1.4;
 }
 
 .password-gate-input {

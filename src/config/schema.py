@@ -21,7 +21,11 @@ class AvatarEntry:
     prompt_file: str = "prompt_mina.txt"
     model_avatar_id: str = ""
     model_avatar_id_ex: str = ""
-    elevenlabs_voice_id: str = ""
+    tts_provider: str = ""  # elevenlabs | inworld | minimax
+    tts_voice_id: str = ""
+    tts_model: str = ""
+    language_boost: str = ""  # minimax only; e.g. Chinese,Yue | auto
+    elevenlabs_voice_id: str = ""  # legacy; use tts_voice_id when tts_provider is set
 
 
 @dataclass
@@ -29,6 +33,40 @@ class WebConfig:
     """前端 Web 配置"""
     port: int = 3000
     host: str = "0.0.0.0"
+
+
+@dataclass
+class AgoraConfig:
+    """
+    Agora RTC（可选）：启用后客户端可走 Agora SDK 拉流/推流，替代浏览器直连 aiortc。
+
+    app_certificate 仅服务端用于生成 RTC Token，勿下发前端；可用 ${ENV} 从环境变量读取。
+    """
+    enabled: bool = False
+    app_id: str = ""
+    app_certificate: Optional[str] = field(default=None, repr=False)
+    token_expiration_seconds: int = 3600
+    # 默认频道名（可与 sessionid / room 拼接）；具体策略由前后端约定
+    default_channel: str = "mina"
+
+
+@dataclass
+class WebRTCConfig:
+    """
+    WebRTC 相关：信令外可配 outbound 视频码率（aiortc 编码器）。
+
+    aiortc 无标准 setParameters；浏览器 REMB 会写 encoder.target_bitrate，
+    值夹在 MIN/MAX 之间。提高 default/min/max 可减轻前几帧糊、高分辨率顶不满码率。
+    三项均为 0 时不改库内建常量。
+
+    agora.enabled=true 时表示优先使用 Agora RTC；此时通常不再使用本服务的 /offer WebRTC 通路，
+    出站码率微调（aiortc）也会跳过。
+    """
+    turn_config: Optional[Dict[str, Any]] = None
+    outbound_video_default_bitrate_bps: int = 0
+    outbound_video_min_bitrate_bps: int = 0
+    outbound_video_max_bitrate_bps: int = 0
+    agora: AgoraConfig = field(default_factory=AgoraConfig)
 
 
 @dataclass
@@ -171,13 +209,18 @@ class ModelConfig:
 @dataclass
 class TTSConfig:
     """TTS 配置"""
-    type: str = "edgetts"  # edgetts | azuretts | fishtts | gpt-sovits | cosyvoice | tencent | doubao | indextts2 | xtts | elevenlabs
+    type: str = "edgetts"  # edgetts | azuretts | fishtts | gpt-sovits | cosyvoice | tencent | doubao | indextts2 | xtts | elevenlabs | inworld | minimax
     ref_file: str = "zh-CN-YunxiaNeural"
     ref_text: Optional[str] = None
     tts_server: str = "http://127.0.0.1:9880"
+    model: str = ""  # provider model id (e.g. inworld-tts-2, eleven_v3)
+    delivery_mode: str = "BALANCED"  # inworld-tts-2: STABLE | BALANCED | CREATIVE
     # API key field — used by engines that require one (e.g. elevenlabs).
     # Supports ${ENV_VAR} substitution via the config loader.
     api_key: Optional[str] = None
+    inworld_api_key: Optional[str] = None  # Inworld TTS only; supports ${inworld_api_key}
+    minimax_api_key: Optional[str] = None  # MiniMax TTS only; supports ${MINIMAX_API_KEY}
+    language_boost: str = "auto"  # MiniMax only; e.g. Chinese,Yue
 
     # ElevenLabs voice settings
     similarity_boost: float = 0.75
@@ -216,9 +259,14 @@ class ASRConfig:
 @dataclass
 class LLMConfig:
     """LLM 配置"""
+    provider: str = "openai"  # openai-compatible provider alias: openai|dashscope|qwen|claude|ollama|vllm|internal
     api_key: str = ""
     base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     model: str = "qwen-plus"
+    character_id: Optional[str] = None  # internal character routing id, e.g. "mayuki-type"
+    # internal provider only:
+    internal_transport: str = "websocket"  # websocket | http — core streaming vs legacy POST /api/agent/chat
+    internal_ws_path: str = "/ws/chat"  # path on same host as base_url (origin)
 
 
 @dataclass
@@ -250,6 +298,7 @@ class CustomVideoConfig:
 class Config:
     """全局配置"""
     app: AppConfig = field(default_factory=AppConfig)
+    webrtc: WebRTCConfig = field(default_factory=WebRTCConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     tts: TTSConfig = field(default_factory=TTSConfig)
     asr: ASRConfig = field(default_factory=ASRConfig)

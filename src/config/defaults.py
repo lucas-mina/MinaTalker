@@ -27,9 +27,13 @@ def get_default_config() -> Config:
             tts_server="http://127.0.0.1:9880"
         ),
         llm=LLMConfig(
+            provider="openai",
             api_key="",
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-            model="qwen-plus"
+            model="qwen-plus",
+            character_id=None,
+            internal_transport="websocket",
+            internal_ws_path="/ws/chat",
         ),
         audio=AudioConfig(
             fps=50,

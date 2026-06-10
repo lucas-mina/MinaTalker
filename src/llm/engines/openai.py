@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import time
 from typing import Generator, Optional
+from urllib.parse import urlparse
 
 from openai import OpenAI, OpenAIError
 
 from src.llm.base import BaseLLM
+from src.llm.transient_network import is_transient_llm_network_error
 from src.utils.logging import logger
+
+_LLM_CONNECT_RETRIES = 3
+_LLM_CONNECT_BACKOFF_SEC = (0.5, 1.5)
 
 
 class OpenAILLM(BaseLLM):
@@ -62,29 +67,57 @@ class OpenAILLM(BaseLLM):
     def chat_stream(
         self,
         message: str,
-        system_prompt: Optional[str] = None
+        system_prompt: Optional[str] = None,
+        lang: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> Generator[str, None, None]:
         start_time = time.perf_counter()
         system_prompt = system_prompt or self.system_prompt
         
         try:
-            # 添加用户消息到历史
-            self.add_to_history('user', message)
-            
-            # 构建完整的消息列表：system + 历史对话
-            messages = [{'role': 'system', 'content': system_prompt}]
-            messages.extend(self.conversation_history)
-            
-            logger.info(f"Sending {len(messages)} messages to LLM (including system prompt and history)")
-            
-            # 采用 OpenAI 兼容流式接口，逐块返回内容
-            completion = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                stream=True,
-                stream_options={"include_usage": True}
-            )
-            
+            host = urlparse(self.base_url).hostname or self.base_url
+            completion = None
+            for attempt in range(_LLM_CONNECT_RETRIES):
+                self.add_to_history("user", message)
+                messages = [{"role": "system", "content": system_prompt}]
+                messages.extend(self.conversation_history)
+                logger.info(
+                    "Sending %d messages to LLM (including system prompt and history)",
+                    len(messages),
+                )
+                try:
+                    completion = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        stream=True,
+                        stream_options={"include_usage": True},
+                    )
+                    break
+                except Exception as conn_exc:
+                    if (
+                        self.conversation_history
+                        and self.conversation_history[-1].get("role") == "user"
+                    ):
+                        self.conversation_history.pop()
+                    if not is_transient_llm_network_error(conn_exc) or attempt >= _LLM_CONNECT_RETRIES - 1:
+                        raise
+                    delay = _LLM_CONNECT_BACKOFF_SEC[
+                        min(attempt, len(_LLM_CONNECT_BACKOFF_SEC) - 1)
+                    ]
+                    logger.warning(
+                        "LLM connect/DNS failed (attempt %d/%d) host=%s model=%s: %r; retrying in %.1fs",
+                        attempt + 1,
+                        _LLM_CONNECT_RETRIES,
+                        host,
+                        self.model,
+                        conn_exc,
+                        delay,
+                    )
+                    time.sleep(delay)
+
+            if completion is None:
+                raise RuntimeError("LLM stream not started after retries")
+
             init_time = time.perf_counter()
             logger.info(f"LLM initialization time: {init_time - start_time:.3f}s")
             

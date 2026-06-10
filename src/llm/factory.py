@@ -2,7 +2,7 @@
 
 from typing import Type
 
-from .engines import BaseLLM, OpenAILLM
+from .engines import BaseLLM, InternalLLM, OpenAILLM
 
 _ENGINE_MAP: dict[str, Type[BaseLLM]] = {
     "openai": OpenAILLM,
@@ -12,10 +12,11 @@ _ENGINE_MAP: dict[str, Type[BaseLLM]] = {
     "claude": OpenAILLM,
     "ollama": OpenAILLM,
     "vllm": OpenAILLM,
+    "internal": InternalLLM,
 }
 
 
-def create_llm_engine(llm_type: str = "openai", config=None, parent=None) -> BaseLLM:
+def create_llm_engine(llm_type: str = "openai", config=None, parent=None, **kwargs) -> BaseLLM:
     """根据类型创建 LLM 引擎"""
     engine_cls = _ENGINE_MAP.get(llm_type.lower())
     if engine_cls is None:
@@ -23,4 +24,4 @@ def create_llm_engine(llm_type: str = "openai", config=None, parent=None) -> Bas
             f"未知的 LLM 类型: {llm_type!r}\n"
             f"支持的类型: {', '.join(_ENGINE_MAP.keys())}"
         )
-    return engine_cls(config, parent)
+    return engine_cls(config, parent, **kwargs)

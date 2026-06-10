@@ -93,27 +93,45 @@ class BaseLLM(ABC):
             return DEFAULT_SYSTEM_PROMPT
     
     @abstractmethod
-    def chat_stream(self, message: str, system_prompt: Optional[str] = None) -> Generator[str, None, None]:
+    def chat_stream(
+        self,
+        message: str,
+        system_prompt: Optional[str] = None,
+        lang: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Generator[str, None, None]:
         """流式调用 LLM，子类必须实现"""
         raise NotImplementedError("子类必须实现 chat_stream 方法")
     
-    def generate_response(self, message: str, avatar_stream: Optional["BaseAvatar"] = None) -> str:
+    def generate_response(
+        self,
+        message: str,
+        avatar_stream: Optional["BaseAvatar"] = None,
+        lang: Optional[str] = None,
+        session_id: Optional[str] = None,
+        voice_request_id: Optional[str] = None,
+    ) -> str:
         """生成完整响应并推送到 avatar"""
         start_time = time.perf_counter()
         text_processor = TextStreamProcessor()
         full_response = ""
         
         target_avatar = avatar_stream or self.parent
-        
+        voice_info: dict[str, str] = {}
+        if voice_request_id and str(voice_request_id).strip():
+            voice_info["request_id"] = str(voice_request_id).strip()
+
         def send_to_avatar(text: str) -> None:
             if target_avatar:
                 logger.info(f"Sending to avatar: {text}")
-                target_avatar.put_msg_txt(text)
+                target_avatar.put_msg_txt(text, voice_info)
         
         try:
+            if target_avatar and voice_info:
+                target_avatar.voice_chat_turn_begin(voice_info["request_id"])
             # 记录首包延迟，方便定位 LLM 响应瓶颈
             first_chunk = True
-            for chunk in self.chat_stream(message):
+            for chunk in self.chat_stream(message, lang=lang, session_id=session_id):
                 if first_chunk:
                     first_chunk_time = time.perf_counter()
                     logger.info(f"Time to first chunk: {first_chunk_time - start_time:.3f}s")
@@ -126,6 +144,8 @@ class BaseLLM(ABC):
             
             if target_avatar:
                 text_processor.flush(send_to_avatar)
+                if voice_info:
+                    target_avatar.voice_chat_queue_closed()
             
             total_time = time.perf_counter()
             logger.info(f"Total LLM response time: {total_time - start_time:.3f}s")
@@ -134,4 +154,6 @@ class BaseLLM(ABC):
             
         except Exception as e:
             logger.error(f"Error in generate_response: {e}")
+            if target_avatar and voice_info:
+                target_avatar.voice_chat_turn_reset()
             raise

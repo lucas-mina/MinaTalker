@@ -15,7 +15,8 @@ from datetime import datetime
 
 import queue
 from queue import Queue
-from threading import Thread, Event
+from threading import Thread, Event, Lock
+from typing import Callable, Optional
 from io import BytesIO
 import soundfile as sf
 
@@ -66,6 +67,14 @@ class BaseAvatar:
         self.tts = create_tts_engine(config.tts.type, config, self)
         self.speaking = False
 
+        # ElevenLabs + WS: track TTS segments per chat.request for chat.end
+        self._voice_lock = Lock()
+        self._chat_voice_end_emitter: Optional[Callable[[str], None]] = None
+        self._voice_request_id: Optional[str] = None
+        self._voice_segments_queued = 0
+        self._voice_segments_finished = 0
+        self._voice_queue_closed = False
+
         # 录制相关状态
         self.recording = False
         self._record_video_pipe = None
@@ -82,9 +91,59 @@ class BaseAvatar:
         self.custom_opt = {}
         self.__loadcustom()
 
-    def put_msg_txt(self,msg,datainfo:dict={}):
-        # 文本消息交给 TTS 处理
-        self.tts.put_msg_txt(msg,datainfo)
+    def set_chat_voice_end_emitter(self, emitter: Optional[Callable[[str], None]]) -> None:
+        """Register callback(request_id) when ElevenLabs TTS has finished all segments for a turn."""
+        self._chat_voice_end_emitter = emitter
+
+    def voice_chat_turn_begin(self, request_id: Optional[str]) -> None:
+        if not request_id or getattr(self.config.tts, "type", "") != "elevenlabs":
+            return
+        with self._voice_lock:
+            self._voice_request_id = str(request_id)
+            self._voice_segments_queued = 0
+            self._voice_segments_finished = 0
+            self._voice_queue_closed = False
+
+    def voice_chat_queue_closed(self) -> None:
+        with self._voice_lock:
+            if not self._voice_request_id:
+                return
+            self._voice_queue_closed = True
+            self._try_emit_chat_voice_end_unlocked()
+
+    def voice_chat_turn_reset(self) -> None:
+        with self._voice_lock:
+            self._voice_request_id = None
+            self._voice_segments_queued = 0
+            self._voice_segments_finished = 0
+            self._voice_queue_closed = False
+
+    def _try_emit_chat_voice_end_unlocked(self) -> None:
+        if not self._voice_request_id or not self._voice_queue_closed:
+            return
+        if self._voice_segments_finished < self._voice_segments_queued:
+            return
+        rid = self._voice_request_id
+        emitter = self._chat_voice_end_emitter
+        self._voice_request_id = None
+        self._voice_segments_queued = 0
+        self._voice_segments_finished = 0
+        self._voice_queue_closed = False
+        if emitter and rid:
+            try:
+                emitter(rid)
+            except Exception:
+                logger.exception("chat.end emitter failed request_id=%s", rid)
+
+    def put_msg_txt(self, msg, datainfo: dict | None = None):
+        if datainfo is None:
+            datainfo = {}
+        rid = datainfo.get("request_id")
+        if rid and getattr(self.config.tts, "type", "") == "elevenlabs":
+            with self._voice_lock:
+                if self._voice_request_id == str(rid):
+                    self._voice_segments_queued += 1
+        self.tts.put_msg_txt(msg, datainfo)
     
     def put_audio_frame(self,audio_chunk,datainfo:dict={}): #16khz 20ms pcm
         # 直接把音频块推给音频流（用于 WebRTC / 录制）
@@ -118,6 +177,7 @@ class BaseAvatar:
 
     def flush_talk(self):
         # 清空 TTS 和音频流队列，快速打断当前发声
+        self.voice_chat_turn_reset()
         self.tts.flush_talk()
         self.audio_stream.flush_talk()
 
@@ -143,8 +203,20 @@ class BaseAvatar:
         for key in self.custom_index:
             self.custom_index[key]=0
 
-    def notify(self,eventpoint):
-        logger.info("notify:%s",eventpoint)
+    def notify(self, eventpoint):
+        logger.info("notify:%s", eventpoint)
+        if not eventpoint or getattr(self.config.tts, "type", "") != "elevenlabs":
+            return
+        if eventpoint.get("status") != "end":
+            return
+        rid = eventpoint.get("request_id")
+        if not rid:
+            return
+        with self._voice_lock:
+            if self._voice_request_id != str(rid):
+                return
+            self._voice_segments_finished += 1
+            self._try_emit_chat_voice_end_unlocked()
 
     def mirror_index(self,size, index):
         # 通过镜像索引实现正反往返播放

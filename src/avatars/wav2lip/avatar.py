@@ -31,6 +31,9 @@ from tqdm import tqdm
 from src.utils.logging import logger
 
 device = "cuda" if torch.cuda.is_available() else ("mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()) else "cpu")
+
+# Wav2Lip v2 checkpoint in ./models/wav2lip.pth; must match warm_up() spatial size in prepare_avatar_model.
+WAV2LIP_FACE_SIZE = 256
 print('Using {} for inference.'.format(device))
 
 # In-process cache for avatar assets: avatar_id -> (frame_list, face_list, coord_list)
@@ -164,6 +167,13 @@ def inference(quit_event,batch_size,face_list_cycle,audio_feat_queue,audio_out_q
             for i in range(batch_size):
                 idx = __mirror_index(length,index+i)
                 face = face_list_cycle[idx]
+                h, w = face.shape[:2]
+                if h != WAV2LIP_FACE_SIZE or w != WAV2LIP_FACE_SIZE:
+                    face = cv2.resize(
+                        face,
+                        (WAV2LIP_FACE_SIZE, WAV2LIP_FACE_SIZE),
+                        interpolation=cv2.INTER_LANCZOS4,
+                    )
                 img_batch.append(face)
             img_batch, mel_batch = np.asarray(img_batch), np.asarray(mel_batch)
 

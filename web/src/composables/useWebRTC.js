@@ -6,6 +6,8 @@ export function useWebRTC(options = {}) {
   let connectionInProgress = false
   const { onNotification } = options
   const onWsMessage = typeof options.onWsMessage === 'function' ? options.onWsMessage : null
+  const getAccessToken = typeof options.getAccessToken === 'function' ? options.getAccessToken : () => ''
+  const getSessionId = typeof options.getSessionId === 'function' ? options.getSessionId : () => ''
   
   /**
    * Build ICE servers from config.
@@ -88,99 +90,91 @@ export function useWebRTC(options = {}) {
         sdp: pc.localDescription.sdp,
         avatar_id: selectedAvatar?.id ?? null
       }
+      const accessToken = (getAccessToken() || '').trim()
+      if (accessToken) payload.access_token = accessToken
+      const sessionIdWs = (getSessionId() || '').trim()
+      // Client convention: Core thread on ``sessionid`` (server maps to LLM ``session_id``).
+      if (sessionIdWs) payload.sessionid = sessionIdWs
 
       let data
-      const useWs = options.useWs !== false
-      if (useWs) {
-        console.log('🔗 通过 WebSocket 发送 Offer...')
-        const wsScheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
-        const wsUrl = `${wsScheme}//${location.host}/ws`
-        data = await new Promise((resolve, reject) => {
-          const ws = new WebSocket(wsUrl)
-          let settled = false
+      console.log('🔗 通过 WebSocket 发送 Offer...')
+      const wsScheme = location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const wsQuery = new URLSearchParams()
+      if (accessToken) wsQuery.set('access_token', accessToken)
+      if (sessionIdWs) wsQuery.set('sessionid', sessionIdWs)
+      const qs = wsQuery.toString()
+      const wsUrl = qs ? `${wsScheme}//${location.host}/ws?${qs}` : `${wsScheme}//${location.host}/ws`
+      if (sessionIdWs) console.log('[WebRTC] /ws sessionid (Core)=', sessionIdWs)
+      data = await new Promise((resolve, reject) => {
+        const ws = new WebSocket(wsUrl)
+        let settled = false
 
-          const settle = (fn, value) => {
-            if (settled) return
-            settled = true
-            fn(value)
-          }
-
-          const timeout = setTimeout(() => {
-            ws.close()
-            settle(reject, new Error('WebSocket signaling timeout'))
-          }, 30000)
-
-          ws.onopen = () => {
-            ws.send(JSON.stringify(payload))
-
-            // Trickle ICE candidates to the server as they are gathered
-            pc.onicecandidate = (event) => {
-              if (!event.candidate || ws.readyState !== WebSocket.OPEN) return
-              ws.send(JSON.stringify({
-                type: 'candidate',
-                candidate: event.candidate.candidate,
-                sdpMid: event.candidate.sdpMid,
-                sdpMLineIndex: event.candidate.sdpMLineIndex,
-              }))
-            }
-          }
-
-          ws.onmessage = (event) => {
-            let msg
-            try { msg = JSON.parse(event.data) } catch (e) {
-              ws.close()
-              settle(reject, e)
-              return
-            }
-            if (msg.type === 'answer') {
-              clearTimeout(timeout)
-              // Keep ws open for trickle; store on pc so stopPlay can send bye
-              pc._signalingWs = ws
-              settle(resolve, msg)
-            } else if (msg.type === 'candidate') {
-              // Server-side trickle candidate — add to local PC
-              if (pc.remoteDescription && msg.candidate) {
-                pc.addIceCandidate({ candidate: msg.candidate, sdpMid: msg.sdpMid, sdpMLineIndex: msg.sdpMLineIndex })
-                  .catch(e => console.warn('addIceCandidate error:', e))
-              }
-            } else if (msg.type === 'pong') {
-              // Heartbeat response — nothing to do
-            } else if (msg.type === 'bye') {
-              ws.close()
-            } else if (msg.type === 'error') {
-              clearTimeout(timeout)
-              ws.close()
-              settle(reject, new Error(msg.error || 'signaling error'))
-            } else if (onWsMessage) {
-              onWsMessage(msg)
-            }
-          }
-
-          ws.onerror = () => {
-            clearTimeout(timeout)
-            settle(reject, new Error('WebSocket error'))
-          }
-
-          ws.onclose = () => {
-            clearTimeout(timeout)
-          }
-        })
-      } else {
-        console.log('🔗 通过 HTTP POST 发送 Offer...')
-        const response = await fetch('/offer', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sdp: payload.sdp,
-            type: pc.localDescription.type,
-            avatar_id: payload.avatar_id
-          })
-        })
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+        const settle = (fn, value) => {
+          if (settled) return
+          settled = true
+          fn(value)
         }
-        data = await response.json()
-      }
+
+        const timeout = setTimeout(() => {
+          ws.close()
+          settle(reject, new Error('WebSocket signaling timeout'))
+        }, 30000)
+
+        ws.onopen = () => {
+          ws.send(JSON.stringify(payload))
+
+          // Trickle ICE candidates to the server as they are gathered
+          pc.onicecandidate = (event) => {
+            if (!event.candidate || ws.readyState !== WebSocket.OPEN) return
+            ws.send(JSON.stringify({
+              type: 'candidate',
+              candidate: event.candidate.candidate,
+              sdpMid: event.candidate.sdpMid,
+              sdpMLineIndex: event.candidate.sdpMLineIndex,
+            }))
+          }
+        }
+
+        ws.onmessage = (event) => {
+          let msg
+          try { msg = JSON.parse(event.data) } catch (e) {
+            ws.close()
+            settle(reject, e)
+            return
+          }
+          if (msg.type === 'answer') {
+            clearTimeout(timeout)
+            // Keep ws open for trickle; store on pc so stopPlay can send bye
+            pc._signalingWs = ws
+            settle(resolve, msg)
+          } else if (msg.type === 'candidate') {
+            // Server-side trickle candidate — add to local PC
+            if (pc.remoteDescription && msg.candidate) {
+              pc.addIceCandidate({ candidate: msg.candidate, sdpMid: msg.sdpMid, sdpMLineIndex: msg.sdpMLineIndex })
+                .catch(e => console.warn('addIceCandidate error:', e))
+            }
+          } else if (msg.type === 'pong') {
+            // Heartbeat response — nothing to do
+          } else if (msg.type === 'bye') {
+            ws.close()
+          } else if (msg.type === 'error') {
+            clearTimeout(timeout)
+            ws.close()
+            settle(reject, new Error(msg.error || 'signaling error'))
+          } else if (onWsMessage) {
+            onWsMessage(msg)
+          }
+        }
+
+        ws.onerror = () => {
+          clearTimeout(timeout)
+          settle(reject, new Error('WebSocket error'))
+        }
+
+        ws.onclose = () => {
+          clearTimeout(timeout)
+        }
+      })
 
       console.log('📥 收到服务器响应，会话ID:', data.sessionid)
       

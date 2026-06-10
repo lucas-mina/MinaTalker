@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import fs from 'fs'
 import path from 'path'
@@ -54,7 +54,16 @@ const protocol = useSSL ? 'https' : 'http'
 // 后端地址使用 localhost（前端访问后端时）
 const backendTarget = `${protocol}://localhost:${backendPort}`
 
-export default defineConfig({
+/** ELB (or core) origin for `/internal-core` dev proxy — override in web/.env as VITE_INTERNAL_PROXY_TARGET */
+function internalCoreProxyTarget(mode) {
+  const e = loadEnv(mode, path.resolve(__dirname), '')
+  return (
+    e.VITE_INTERNAL_PROXY_TARGET ||
+    'https://prd.minamina.ai'
+  )
+}
+
+export default defineConfig(({ mode }) => ({
   plugins: [vue()],
   server: {
     host: webHost,
@@ -137,7 +146,14 @@ export default defineConfig({
         target: backendTarget,
         changeOrigin: true,
         secure: false
-      }
+      },
+      // Core API (login / refresh) — browser calls same-origin /internal-core/... to avoid CORS in dev.
+      '/internal-core': {
+        target: internalCoreProxyTarget(mode),
+        changeOrigin: true,
+        secure: false,
+        rewrite: (p) => p.replace(/^\/internal-core/, ''),
+      },
     }
   },
   build: {
@@ -152,4 +168,4 @@ export default defineConfig({
       }
     }
   }
-})
+}))

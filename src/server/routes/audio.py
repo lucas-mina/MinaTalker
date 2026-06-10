@@ -5,6 +5,7 @@ import asyncio
 import re
 
 from src.llm.service import llm_response
+from src.llm.transient_network import user_message_asr_http
 from src.utils.logging import logger
 from src.server.state import state
 
@@ -13,6 +14,15 @@ _ASR_SILENCE_STREAK: dict[int, int] = {}
 _SENTENCE_END_RE = re.compile(r"[。！？!?….!]$")
 _MIN_SILENCE_CHUNKS_TO_FLUSH = 2
 _MIN_PENDING_TEXT_LEN_TO_FLUSH = 3
+
+
+def _extract_bearer_token(authorization_header: str | None) -> str | None:
+    if not authorization_header:
+        return None
+    parts = authorization_header.strip().split(" ", 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer" and parts[1].strip():
+        return parts[1].strip()
+    return None
 
 
 def _append_asr_text(prev: str, chunk: str) -> str:
@@ -25,6 +35,16 @@ def _append_asr_text(prev: str, chunk: str) -> str:
     if prev[-1].isalnum() and chunk[0].isalnum():
         return f"{prev} {chunk}"
     return f"{prev}{chunk}"
+
+
+def _asr_llm_lang(client_lang) -> str | None:
+    """Locale hint for internal LLM; omit when unknown/auto."""
+    if not client_lang:
+        return None
+    s = str(client_lang).strip()
+    if not s or s.lower() == "auto":
+        return None
+    return s
 
 
 def _client_lang_to_whisper(client_lang: str) -> str:
@@ -79,12 +99,14 @@ async def asr(request):
     try:
         form = await request.post()
         sessionid = int(form.get('sessionid', 0))
+        access_token = form.get("access_token") or _extract_bearer_token(request.headers.get("Authorization"))
         fileobj = form["file"]
         filebytes = fileobj.file.read()
         # Optional: client sends recognition language (e.g. zh-CN, en-US) so server uses it
         client_lang = form.get("language") or form.get("lang")
         if isinstance(client_lang, bytes):
             client_lang = client_lang.decode("utf-8", errors="replace")
+        llm_lang = _asr_llm_lang(client_lang)
 
         # ASR/LLM 调用在同一流程中，失败时返回可读错误
         from src.asr import get_asr_engine
@@ -184,9 +206,14 @@ async def asr(request):
                         llm_response,
                         pending_text,
                         avatar_stream,
+                        llm_config.provider if llm_config else "openai",
                         llm_config.api_key if llm_config else None,
                         llm_config.base_url if llm_config else "https://dashscope.aliyuncs.com/compatible-mode/v1",
                         llm_config.model if llm_config else "qwen-plus",
+                        access_token,
+                        llm_config.character_id if llm_config else None,
+                        llm_lang,
+                        None,
                     )
                     _ASR_PENDING_TEXT[sessionid] = ""
                     _ASR_SILENCE_STREAK[sessionid] = 0
@@ -244,9 +271,14 @@ async def asr(request):
                 llm_response,
                 pending_text,
                 avatar_stream,
+                llm_config.provider if llm_config else "openai",
                 llm_config.api_key if llm_config else None,
                 llm_config.base_url if llm_config else "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 llm_config.model if llm_config else "qwen-plus",
+                access_token,
+                llm_config.character_id if llm_config else None,
+                llm_lang,
+                None,
             )
             logger.info(f'[ASR] LLM 回复: {llm_text}')
             _ASR_PENDING_TEXT[sessionid] = ""
@@ -260,11 +292,11 @@ async def asr(request):
             )
             
         except Exception as e:
-            logger.exception('[ASR] 语音识别失败:')
+            logger.exception("[ASR] 语音识别失败:")
             return web.Response(
                 content_type="application/json",
                 text=json.dumps(
-                    {"code": -1, "msg": f"语音识别失败: {str(e)}"}
+                    {"code": -1, "msg": user_message_asr_http(e)}
                 ),
             )
             

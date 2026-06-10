@@ -3,7 +3,7 @@
 from src.llm.base import BaseLLM, TextStreamProcessor
 from src.llm.factory import create_llm_engine
 from src.llm.service import llm_response
-from src.llm.engines import OpenAILLM
+from src.llm.engines import InternalLLM, OpenAILLM
 
 __all__ = [
     "BaseLLM",
@@ -11,4 +11,5 @@ __all__ = [
     "create_llm_engine",
     "llm_response",
     "OpenAILLM",
+    "InternalLLM",
 ]

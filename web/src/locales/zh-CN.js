@@ -1,5 +1,18 @@
 // 中文语言包
 export default {
+  internalAuth: {
+    title: '账号登录',
+    hint: '对接核心服务 API（见文档）。令牌会用于 WebRTC 与内部 LLM 的 Bearer 鉴权。',
+    username: '用户名或邮箱',
+    password: '密码',
+    signIn: '登录',
+    signingIn: '登录中…',
+    skip: '暂不登录',
+    fillBoth: '请输入用户名和密码。',
+    loggedOut: '已退出登录',
+    refreshFailed: '会话已失效，请重新登录',
+  },
+
   header: {
     title: 'Linly-Talker-Stream',
     subtitle: '全双工实时交互数字人',
@@ -10,7 +23,8 @@ export default {
     },
     session: '会话',
     github: 'GitHub',
-    backToSelect: '返回选择 Avatar'
+    backToSelect: '返回选择 Avatar',
+    signOutCore: '退出 API 登录',
   },
   
   chat: {
@@ -46,6 +60,18 @@ export default {
   },
   
   settings: {
+    coreApi: {
+      title: '核心 API 账号',
+      desc: '用于内部 LLM 与 WebRTC 的 Bearer 令牌；若配置了刷新接口，每 10 分钟自动续期。',
+      statusIn: '已登录',
+      statusOut: '未登录',
+      username: '用户名或邮箱',
+      password: '密码',
+      signIn: '登录',
+      signingIn: '登录中…',
+      signOut: '退出登录',
+      fillBoth: '请输入用户名和密码。',
+    },
     title: '设置',
     systemSettings: '系统设置',
     save: '保存设置',
@@ -110,6 +136,7 @@ export default {
   },
   
   notifications: {
+    coreLoginOk: '核心 API 已登录',
     settingsSaved: '设置已保存',
     settingsReset: '已恢复默认设置',
     backendReady: '后端已就绪，可以开始连接',

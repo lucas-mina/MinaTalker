@@ -80,6 +80,54 @@
             </div>
           </div>
 
+          <!-- Core API login (internal LLM / Bearer) -->
+          <div class="settings-section" v-if="showCoreAuth">
+            <h4><i class="bi bi-shield-lock"></i> {{ t('settings.coreApi.title') }}</h4>
+            <div class="setting-item info-banner">
+              <div class="info-content">
+                <i class="bi bi-info-circle"></i>
+                <div>
+                  <p>{{ t('settings.coreApi.desc') }}</p>
+                  <p class="core-api-status" :class="{ ok: coreSignedIn }">
+                    <i :class="coreSignedIn ? 'bi bi-check-circle-fill' : 'bi bi-circle'"></i>
+                    {{ coreSignedIn ? t('settings.coreApi.statusIn') : t('settings.coreApi.statusOut') }}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <template v-if="!coreSignedIn">
+              <div class="setting-item">
+                <div class="setting-label">
+                  <label for="core-user">{{ t('settings.coreApi.username') }}</label>
+                </div>
+                <div class="setting-control">
+                  <input id="core-user" v-model="coreUsername" type="text" autocomplete="username" class="core-auth-input">
+                </div>
+              </div>
+              <div class="setting-item">
+                <div class="setting-label">
+                  <label for="core-pass">{{ t('settings.coreApi.password') }}</label>
+                </div>
+                <div class="setting-control">
+                  <input id="core-pass" v-model="corePassword" type="password" autocomplete="current-password" class="core-auth-input">
+                </div>
+              </div>
+              <div class="setting-item core-auth-actions">
+                <button type="button" class="btn-primary" :disabled="coreLoginLoading" @click="submitCoreLogin">
+                  <i class="bi bi-box-arrow-in-right"></i>
+                  {{ coreLoginLoading ? t('settings.coreApi.signingIn') : t('settings.coreApi.signIn') }}
+                </button>
+              </div>
+            </template>
+            <div v-else class="setting-item core-auth-actions">
+              <button type="button" class="btn-secondary" @click="submitCoreLogout">
+                <i class="bi bi-box-arrow-right"></i>
+                {{ t('settings.coreApi.signOut') }}
+              </button>
+            </div>
+          </div>
+
           <!-- 录制设置（前端隐藏，仅保留内部配置） -->
           <div class="settings-section" v-if="showRecordingSettings">
             <h4><i class="bi bi-record-circle"></i> {{ t('settings.recording.title') }}</h4>
@@ -270,11 +318,32 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted } from 'vue'
+import { ref, watch, onMounted, computed } from 'vue'
 import { useI18n } from '../composables/useI18n'
+import {
+  isInternalAuthConfigured,
+  getStoredAccessToken,
+  loginInternalAuth,
+  clearInternalAuth,
+  stopAuthRefreshLoop,
+} from '../composables/useInternalAuth'
 
 const { t } = useI18n()
 const showSettings = ref(false)
+
+const showCoreAuth = computed(() => isInternalAuthConfigured())
+const coreSignedIn = ref(false)
+const coreUsername = ref('')
+const corePassword = ref('')
+const coreLoginLoading = ref(false)
+
+function syncCoreSignedIn() {
+  coreSignedIn.value = !!getStoredAccessToken()
+}
+
+watch(showSettings, (open) => {
+  if (open) syncCoreSignedIn()
+})
 
 // 是否展示录制相关设置（当前产品阶段隐藏）
 const showRecordingSettings = false
@@ -307,7 +376,7 @@ const defaultSettings = {
 const settings = ref({ ...defaultSettings })
 
 // 定义事件
-const emit = defineEmits(['settings-changed', 'notification'])
+const emit = defineEmits(['settings-changed', 'notification', 'core-auth-changed'])
 
 const toggleSettings = () => {
   showSettings.value = !showSettings.value
@@ -336,7 +405,36 @@ const resetSettings = () => {
 }
 
 // 加载保存的设置
+async function submitCoreLogin() {
+  const u = coreUsername.value.trim()
+  const p = corePassword.value
+  if (!u || !p) {
+    emit('notification', t('settings.coreApi.fillBoth'), 'warning')
+    return
+  }
+  coreLoginLoading.value = true
+  try {
+    await loginInternalAuth(u, p)
+    corePassword.value = ''
+    syncCoreSignedIn()
+    emit('core-auth-changed', { loggedIn: true })
+    emit('notification', t('notifications.coreLoginOk'), 'success')
+  } catch (e) {
+    emit('notification', e instanceof Error ? e.message : String(e), 'error')
+  } finally {
+    coreLoginLoading.value = false
+  }
+}
+
+function submitCoreLogout() {
+  stopAuthRefreshLoop()
+  clearInternalAuth()
+  syncCoreSignedIn()
+  emit('core-auth-changed', { loggedIn: false })
+}
+
 onMounted(() => {
+  syncCoreSignedIn()
   const savedSettings = localStorage.getItem('linly-talker-stream-settings')
   if (savedSettings) {
     try {
@@ -743,6 +841,39 @@ input:checked + .slider:before {
   color: var(--warning);
   font-size: 0.8rem;
   margin-top: 0.5rem;
+}
+
+.core-api-status {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 600;
+  margin-top: 0.5rem !important;
+  color: var(--text-muted) !important;
+}
+
+.core-api-status.ok {
+  color: var(--success) !important;
+}
+
+.core-auth-input {
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.core-auth-actions {
+  margin-top: 0.5rem;
+}
+
+.core-auth-actions .btn-primary,
+.core-auth-actions .btn-secondary {
+  width: 100%;
+  justify-content: center;
 }
 
 .settings-content::-webkit-scrollbar-thumb:hover {

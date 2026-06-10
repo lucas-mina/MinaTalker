@@ -13,6 +13,8 @@ from .engines import (
     DoubaoTTS,
     EdgeTTS,
     ElevenLabsTTS,
+    InworldTTS,
+    MiniMaxTTS,
     FishTTS,
     IndexTTS2,
     SovitsTTS,
@@ -32,6 +34,8 @@ _ENGINE_MAP: dict[str, Type[BaseTTS]] = {
     "indextts2": IndexTTS2,
     "azuretts": AzureTTS,
     "elevenlabs": ElevenLabsTTS,
+    "inworld": InworldTTS,
+    "minimax": MiniMaxTTS,
 }
 
 

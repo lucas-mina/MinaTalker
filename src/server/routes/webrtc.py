@@ -13,15 +13,19 @@ from src.avatars.factory import create_avatar
 from src.utils.logging import logger
 from src.server.state import state
 from src.server.utils import randN
-from src.config.loader import resolve_avatar_prompt_file, load_avatar_entries
+from src.config.loader import find_avatar_entry_by_catalog_id, load_avatar_entries
 from src.llm.service import remove_session as remove_llm_session
-from src.server.routes.chat import process_human_message
+from src.server.routes.chat import (
+    core_llm_session_id_from_request_payload,
+    process_human_message,
+    webrtc_avatar_sessionid_from_chat_request,
+)
 
 # ------------------------------------------------------------------
 # WS signaling protocol
 # ------------------------------------------------------------------
 # Client → Server messages:
-#   { "type": "offer",     "sdp": "<sdp>", "avatar_id": <int|null> }
+#   { "type": "offer",     "sdp": "<sdp>", "avatar_id": <int|string|null> }  # string = YAML catalog id (e.g. UUID)
 #   { "type": "candidate", "candidate": "<sdpMid>", "sdpMid": "<mid>", "sdpMLineIndex": <int> }
 #   { "type": "is_speaking" }   # optional status query on existing WS
 #   { "type": "ping" }
@@ -40,7 +44,16 @@ _WS_HEARTBEAT_INTERVAL = 25  # seconds between server-initiated pings
 _WS_HEARTBEAT_TIMEOUT  = 15  # seconds to wait for pong before closing
 
 
-async def handle_offer(sdp: str, type_: str, avatar_id=None) -> tuple[dict, RTCPeerConnection]:
+def _extract_bearer_token(authorization_header: str | None) -> str | None:
+    if not authorization_header:
+        return None
+    parts = authorization_header.strip().split(" ", 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer" and parts[1].strip():
+        return parts[1].strip()
+    return None
+
+
+async def handle_offer(sdp: str, type_: str, avatar_id=None, access_token: str | None = None) -> tuple[dict, RTCPeerConnection]:
     """
     处理 WebRTC offer（SDP + type），创建会话、PC 和 answer。
     供 HTTP POST /offer 和 WebSocket 信令共用。
@@ -59,28 +72,54 @@ async def handle_offer(sdp: str, type_: str, avatar_id=None) -> tuple[dict, RTCP
 
     if avatar_id is not None:
         try:
-            avatar_id_int = int(avatar_id)
             entries = load_avatar_entries()
-            matched = next((e for e in entries if e.get("id") == avatar_id_int), None)
+            matched = find_avatar_entry_by_catalog_id(entries, avatar_id)
 
             if matched:
+                # 0. Internal LLM routing: use avatar catalog id as character_id when present
+                catalog_char = matched.get("id")
+                if catalog_char is not None and str(catalog_char).strip():
+                    session_config.llm.character_id = str(catalog_char).strip()
+                    logger.info(
+                        "Using llm.character_id=%s from avatar_config (catalog id)",
+                        session_config.llm.character_id,
+                    )
+
                 # 1. Stamp per-avatar prompt file
                 prompt_file = matched.get("prompt_file")
                 if prompt_file:
                     session_config.prompt_file = prompt_file
                     logger.info('Using prompt_file=%s for avatar_id=%s', prompt_file, avatar_id)
 
-                # 2. Stamp per-avatar ElevenLabs voice ID (overrides global tts.ref_file)
-                eleven_voice = (matched.get("elevenlabs_voice_id") or "").strip()
-                if eleven_voice:
-                    if getattr(session_config.tts, "type", "") == "elevenlabs":
-                        session_config.tts.ref_file = eleven_voice
-                        logger.info('Using elevenlabs_voice_id=%s for avatar_id=%s', eleven_voice, avatar_id)
-                    else:
-                        logger.info(
-                            'elevenlabs_voice_id=%s found for avatar_id=%s but tts.type=%s — skipping override',
-                            eleven_voice, avatar_id, getattr(session_config.tts, "type", "?")
-                        )
+                # 2. Per-avatar TTS provider + voice (elevenlabs | inworld | minimax)
+                provider = (matched.get("tts_provider") or "").strip().lower()
+                voice_id = (matched.get("tts_voice_id") or matched.get("elevenlabs_voice_id") or "").strip()
+                tts_model = (matched.get("tts_model") or "").strip()
+                language_boost = (matched.get("language_boost") or "").strip()
+                if not provider and voice_id:
+                    provider = "elevenlabs"
+                if voice_id and provider in ("elevenlabs", "inworld", "minimax"):
+                    session_config.tts.type = provider
+                    session_config.tts.ref_file = voice_id
+                    if tts_model:
+                        session_config.tts.model = tts_model
+                    if language_boost:
+                        session_config.tts.language_boost = language_boost
+                    logger.info(
+                        "Using tts provider=%s voice_id=%s model=%s language_boost=%s for avatar_id=%s",
+                        provider,
+                        voice_id,
+                        tts_model or "(default)",
+                        language_boost or session_config.tts.language_boost,
+                        avatar_id,
+                    )
+                elif voice_id:
+                    logger.warning(
+                        "Unknown tts_provider=%r for avatar_id=%s (voice_id=%s)",
+                        provider,
+                        avatar_id,
+                        voice_id,
+                    )
 
                 # 3. Load the per-avatar model assets (frames/coords/latents)
                 model_avatar_id = matched.get("model_avatar_id")
@@ -121,6 +160,8 @@ async def handle_offer(sdp: str, type_: str, avatar_id=None) -> tuple[dict, RTCP
     avatar_stream = await asyncio.get_event_loop().run_in_executor(
         None, create_avatar, session_config, state.model, session_avatar_data, sessionid
     )
+    if access_token:
+        setattr(avatar_stream, "internal_access_token", access_token)
     state.add_session(sessionid, avatar_stream)
     
     ice_server = RTCIceServer(urls='stun:stun.miwifi.com:3478')
@@ -171,10 +212,16 @@ async def handle_offer(sdp: str, type_: str, avatar_id=None) -> tuple[dict, RTCP
 async def offer(request):
     """处理 WebRTC offer 请求（HTTP POST）"""
     params = await request.json()
+    access_token = (
+        params.get("access_token")
+        or _extract_bearer_token(request.headers.get("Authorization"))
+        or request.query.get("access_token")
+    )
     result, _pc = await handle_offer(
         params["sdp"],
         params["type"],
         params.get("avatar_id"),
+        access_token,
     )
     return web.Response(
         content_type="application/json",
@@ -206,6 +253,18 @@ async def ws_signaling(request):
     sessionid: int | None = None
     speaking_task: asyncio.Task | None = None
     last_speaking_state: bool | None = None
+    session_access_token: str | None = (
+        _extract_bearer_token(request.headers.get("Authorization"))
+        or request.query.get("access_token")
+    )
+    session_llm_session_id: str | None = core_llm_session_id_from_request_payload(
+        {
+            "session_id": request.query.get("session_id"),
+            "sessionid": request.query.get("sessionid"),
+        }
+    )
+    if session_llm_session_id:
+        logger.info("ws_signaling: WS query Core session_id=%s", session_llm_session_id)
 
     async def _cleanup(reason: str = ""):
         nonlocal pc, sessionid, speaking_task
@@ -260,7 +319,7 @@ async def ws_signaling(request):
             pass
 
     async def _handle_offer(data: dict):
-        nonlocal pc, sessionid, speaking_task, last_speaking_state
+        nonlocal pc, sessionid, speaking_task, last_speaking_state, session_access_token, session_llm_session_id
 
         sdp = data.get("sdp")
         if not sdp:
@@ -271,12 +330,44 @@ async def ws_signaling(request):
             # Re-negotiate: tear down the previous session first
             await _cleanup("re-negotiate")
 
-        result, new_pc = await handle_offer(sdp, "offer", data.get("avatar_id"))
+        message_access_token = data.get("access_token")
+        if message_access_token:
+            session_access_token = message_access_token
+        offer_core_sid = core_llm_session_id_from_request_payload(data)
+        if offer_core_sid:
+            session_llm_session_id = offer_core_sid
+            logger.info("ws_signaling: offer Core session_id=%s", session_llm_session_id)
+        result, new_pc = await handle_offer(sdp, "offer", data.get("avatar_id"), session_access_token)
         sessionid = result["sessionid"]
         pc = new_pc
         last_speaking_state = None
 
         await _send({"type": "answer", **result})
+        bound_sid = int(result["sessionid"])
+        av_for_end = state.avatar_streams.get(bound_sid)
+        if av_for_end is not None:
+            loop = asyncio.get_running_loop()
+
+            async def _send_chat_end(rid: str):
+                await _send({"type": "chat.end", "request_id": rid, "sessionid": bound_sid})
+
+            def _emit_chat_voice_end(request_id: str) -> None:
+                fut = asyncio.run_coroutine_threadsafe(_send_chat_end(request_id), loop)
+
+                def _log_send_err(f):
+                    try:
+                        f.result()
+                    except Exception:
+                        logger.exception(
+                            "ws_signaling: chat.end failed sessionid=%s request_id=%s",
+                            bound_sid,
+                            request_id,
+                        )
+
+                fut.add_done_callback(_log_send_err)
+
+            av_for_end.set_chat_voice_end_emitter(_emit_chat_voice_end)
+
         await _send_speaking_state(force=True)
         if speaking_task is not None:
             speaking_task.cancel()
@@ -285,7 +376,11 @@ async def ws_signaling(request):
             except asyncio.CancelledError:
                 pass
         speaking_task = asyncio.create_task(_speaking_state_loop(sessionid))
-        logger.info("ws_signaling: offer handled, session=%s", sessionid)
+        logger.info(
+            "ws_signaling: offer handled, sessionid=%s session_id=%s",
+            sessionid,
+            session_llm_session_id or "(none)",
+        )
 
     async def _handle_candidate(data: dict):
         """Feed a trickle ICE candidate into the peer connection."""
@@ -341,21 +436,52 @@ async def ws_signaling(request):
                     await _send({"type": "bye"})
                     break
 
-                elif msg_type == "human":
+                elif msg_type == "chat.request":
                     # Handle chat/echo over the same WebSocket channel after signaling.
                     request_id = data.get("request_id")
                     try:
+                        if data.get("access_token"):
+                            session_access_token = data.get("access_token")
+                            _av_room = webrtc_avatar_sessionid_from_chat_request(sessionid, data)
+                            av = state.avatar_streams.get(_av_room)
+                            if av:
+                                setattr(av, "internal_access_token", session_access_token)
                         params = {
-                            "sessionid": sessionid or data.get("sessionid", 0),
+                            "sessionid": webrtc_avatar_sessionid_from_chat_request(sessionid, data),
                             "text": data.get("text", ""),
                             "type": data.get("message_type", "chat"),
                             "interrupt": bool(data.get("interrupt", True)),
+                            "access_token": data.get("access_token") or session_access_token,
+                            "request_id": data.get("request_id"),
                         }
+                        raw_lang = data.get("lang")
+                        if raw_lang is not None and str(raw_lang).strip():
+                            params["lang"] = str(raw_lang).strip()
+                        msg_core_sid = core_llm_session_id_from_request_payload(data)
+                        if msg_core_sid:
+                            params["session_id"] = msg_core_sid
+                        elif session_llm_session_id:
+                            params["session_id"] = session_llm_session_id
+                        if params.get("session_id"):
+                            logger.info(
+                                "ws_signaling: chat.request session_id=%s (webrtc sessionid=%s)",
+                                params["session_id"],
+                                params.get("sessionid"),
+                            )
                         result = await process_human_message(params)
-                        await _send({"type": "human_response", "request_id": request_id, **result})
+                        await _send({"type": "chat.response", "request_id": request_id, **result})
                     except Exception as e:
                         logger.exception("ws_signaling: human failed: %s", e)
-                        await _send({"type": "human_response", "request_id": request_id, "code": -1, "msg": str(e)})
+                        await _send({"type": "chat.response", "request_id": request_id, "code": -1, "msg": str(e)})
+
+                elif msg_type == "interrupt_talk":
+                    target_session = webrtc_avatar_sessionid_from_chat_request(sessionid, data)
+                    avatar_stream = state.avatar_streams.get(target_session)
+                    if avatar_stream is None:
+                        await _send({"type": "interrupt_response", "code": -1, "msg": f"session {target_session} not found"})
+                    else:
+                        avatar_stream.flush_talk()
+                        await _send({"type": "interrupt_response", "code": 0, "msg": "ok"})
 
                 else:
                     await _send({"type": "error", "error": f"unknown message type: {msg_type!r}"})

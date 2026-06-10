@@ -1,5 +1,18 @@
 // English language pack
 export default {
+  internalAuth: {
+    title: 'Account sign-in',
+    hint: 'Uses your core API (see docs). Token is sent to WebRTC and internal LLM as Bearer.',
+    username: 'Username or email',
+    password: 'Password',
+    signIn: 'Sign in',
+    signingIn: 'Signing in…',
+    skip: 'Continue without account',
+    fillBoth: 'Enter username and password.',
+    loggedOut: 'Signed out',
+    refreshFailed: 'Session expired — please sign in again',
+  },
+
   header: {
     title: 'MinaMina',
     subtitle: 'Real-time Interactive Digital Human',
@@ -10,7 +23,8 @@ export default {
     },
     session: 'Session',
     github: 'GitHub',
-    backToSelect: 'Back to Avatar Selection'
+    backToSelect: 'Back to Avatar Selection',
+    signOutCore: 'Sign out (API)',
   },
   
   chat: {
@@ -46,6 +60,18 @@ export default {
   },
   
   settings: {
+    coreApi: {
+      title: 'Core API account',
+      desc: 'Bearer token for internal LLM and WebRTC. Refreshes every 10 minutes when refresh is configured.',
+      statusIn: 'Signed in',
+      statusOut: 'Not signed in',
+      username: 'Username or email',
+      password: 'Password',
+      signIn: 'Sign in',
+      signingIn: 'Signing in…',
+      signOut: 'Sign out',
+      fillBoth: 'Enter username and password.',
+    },
     title: 'Settings',
     systemSettings: 'System Settings',
     save: 'Save Settings',
@@ -110,6 +136,7 @@ export default {
   },
   
   notifications: {
+    coreLoginOk: 'Core API signed in',
     settingsSaved: 'Settings saved',
     settingsReset: 'Reset to default settings',
     backendReady: 'Backend is ready, you can start connecting',

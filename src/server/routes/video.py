@@ -36,7 +36,7 @@ async def set_flower_mode(request):
     Trigger the per-avatar "flower" custom video/audio state.
     
     Frontend sends:
-      { "sessionid": number, "avatar_id": number }
+      { "sessionid": number, "avatar_id": number|string }  # string = catalog id in avatar_config.yaml (e.g. UUID)
     
     We look up the corresponding *_ex model id from avatar_config.yaml
     (using the model_avatar_id_ex field) and, if supported, switch the
@@ -57,21 +57,14 @@ async def set_flower_mode(request):
                 status=400,
             )
 
-        if avatar_id is None:
+        if avatar_id is None or (isinstance(avatar_id, str) and not avatar_id.strip()):
             return web.Response(
                 content_type="application/json",
                 text=json.dumps({"code": -1, "msg": "avatar_id is required"}),
                 status=400,
             )
 
-        try:
-            avatar_id_int = int(avatar_id)
-        except (TypeError, ValueError):
-            return web.Response(
-                content_type="application/json",
-                text=json.dumps({"code": -1, "msg": "avatar_id must be integer-like"}),
-                status=400,
-            )
+        catalog_avatar_id = avatar_id
 
         avatar_stream = state.avatar_streams[sessionid]
         if avatar_stream is None:
@@ -82,12 +75,12 @@ async def set_flower_mode(request):
             )
 
         # 1) Switch underlying avatar video to *_ex model if possible
-        ex_avatar_id = resolve_avatar_ex_model_id(avatar_id_int)
+        ex_avatar_id = resolve_avatar_ex_model_id(catalog_avatar_id)
         if ex_avatar_id and hasattr(avatar_stream, "switch_avatar"):
             logger.info(
                 "[Flower] sessionid=%s avatar_id=%s switching avatar to %s",
                 sessionid,
-                avatar_id_int,
+                catalog_avatar_id,
                 ex_avatar_id,
             )
             try:
@@ -100,12 +93,12 @@ async def set_flower_mode(request):
                 )
 
         # 2) Optionally trigger a custom video/audio state, if configured
-        audiotype = resolve_avatar_flower_audiotype(avatar_id_int)
+        audiotype = resolve_avatar_flower_audiotype(catalog_avatar_id)
         if audiotype:
             logger.info(
                 "[Flower] sessionid=%s avatar_id=%s audiotype=%s",
                 sessionid,
-                avatar_id_int,
+                catalog_avatar_id,
                 audiotype,
             )
             try:

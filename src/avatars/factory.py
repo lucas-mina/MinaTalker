@@ -61,10 +61,10 @@ def prepare_avatar_model(config: Any):
         warm_up(config.model.batch_size, model)
         return model, avatar
     elif model_type == 'wav2lip':
-        from .wav2lip.avatar import load_model, load_avatar, warm_up
+        from .wav2lip.avatar import load_model, load_avatar, warm_up, WAV2LIP_FACE_SIZE
         model = load_model("./models/wav2lip.pth")
         avatar = load_avatar(config.model.avatar_id)
-        warm_up(config.model.batch_size, model, 256)
+        warm_up(config.model.batch_size, model, WAV2LIP_FACE_SIZE)
         return model, avatar
     elif model_type == 'ultralight':
         from .ultralight.avatar import load_model, load_avatar, warm_up
