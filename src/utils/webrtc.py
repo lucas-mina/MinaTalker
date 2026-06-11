@@ -130,9 +130,10 @@ def player_worker_thread(
     loop,
     container,
     audio_track,
-    video_track
+    video_track,
+    media_sink=None,
 ):
-    container.render(quit_event,loop,audio_track,video_track)
+    container.render(quit_event, loop, audio_track, video_track, media_sink=media_sink)
 
 class HumanPlayer:
 

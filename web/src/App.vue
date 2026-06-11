@@ -280,6 +280,7 @@ import SelectView from './components/SelectView.vue'
 import DebugPanel from './components/DebugPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import { useWebRTC } from './composables/useWebRTC'
+import { useAgoraRTC } from './composables/useAgoraRTC'
 import { useSpeechRecognition } from './composables/useSpeechRecognition'
 import { createSherpaVadSession } from './composables/useSherpaVad'
 import { useI18n } from './composables/useI18n'
@@ -415,6 +416,7 @@ const notifications = ref([])
 let notificationIdCounter = 0
 const lastRecordFile = ref(null)
 const backendReady = ref(false)
+const agoraRtcEnabled = ref(false)
 const showChatRecords = ref(true)
 /** When true, we should auto-connect once (after avatar select or when backend becomes ready) */
 const shouldAutoConnectAfterAvatar = ref(false)
@@ -589,7 +591,7 @@ try {
   if (stored && String(stored).trim()) internalLlmSessionId.value = String(stored).trim()
 } catch (_) {}
 
-const { startPlay, stopPlay, sendWsMessage, getSignalingSocket } = useWebRTC({
+const rtcOptions = {
   onNotification: showNotification,
   onWsMessage: handleWsMessage,
   getAccessToken: getInternalAccessToken,
@@ -602,7 +604,23 @@ const { startPlay, stopPlay, sendWsMessage, getSignalingSocket } = useWebRTC({
       return ''
     }
   },
-})
+}
+
+const webrtcApi = useWebRTC(rtcOptions)
+const agoraApi = useAgoraRTC(rtcOptions)
+
+const startPlay = (iceConfig) => (
+  agoraRtcEnabled.value ? agoraApi.startPlay() : webrtcApi.startPlay(iceConfig)
+)
+const stopPlay = () => (
+  agoraRtcEnabled.value ? agoraApi.stopPlay() : webrtcApi.stopPlay()
+)
+const sendWsMessage = (payload) => (
+  agoraRtcEnabled.value ? agoraApi.sendWsMessage(payload) : webrtcApi.sendWsMessage(payload)
+)
+const getSignalingSocket = () => (
+  agoraRtcEnabled.value ? agoraApi.getSignalingSocket() : webrtcApi.getSignalingSocket()
+)
 
 // 设置变更处理
 const onSettingsChanged = (newSettings) => {
@@ -702,6 +720,8 @@ const checkBackendReady = async () => {
             const type = configData?.asr?.type ?? 'whisper'
             asrModeFromServer.value = mode
             if (mode === 'server') console.log(`✅ ASR 模式: 服务端 ${type} + VAD`)
+            agoraRtcEnabled.value = configData?.webrtc?.agora?.enabled === true
+            if (agoraRtcEnabled.value) console.log('✅ 媒体通路: Agora RTC (Video Calling)')
           }
         } catch (_) {}
         return true

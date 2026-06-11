@@ -55,6 +55,13 @@ def main():
             "WebRTC: Agora enabled (app_id set=%s); skip aiortc outbound bitrate tuning",
             bool(getattr(_agora, "app_id", None)),
         )
+        if sys.platform == "win32":
+            logger.warning(
+                "Agora server publisher is not supported on Windows. "
+                "POST /agora/join will fail until the server runs on Linux/macOS "
+                "(agora-python-server-sdk). Use WSL/Docker for local dev, or "
+                "set webrtc.agora.enabled=false and use aiortc on Windows."
+            )
     else:
         apply_webrtc_outbound_video_bitrate(state.config.webrtc)
     

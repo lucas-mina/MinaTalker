@@ -248,7 +248,7 @@ class UltralightAvatar(BaseAvatar):
         combine_frame[y1:y2, x1:x2] = crop_img_ori
         return combine_frame
             
-    def render(self,quit_event,loop=None,audio_track=None,video_track=None):
+    def render(self,quit_event,loop=None,audio_track=None,video_track=None,media_sink=None):
         #if self.opt.asr:
         #     self.audio_stream.warm_up()
 
@@ -261,7 +261,7 @@ class UltralightAvatar(BaseAvatar):
         infer_thread.start()
         
         process_quit_event = Event()
-        process_thread = Thread(target=self.process_frames, args=(process_quit_event,loop,audio_track,video_track))
+        process_thread = Thread(target=self.process_frames, args=(process_quit_event,loop,audio_track,video_track), kwargs={"media_sink": media_sink})
         process_thread.start()   
 
         #self.render_event.set() #start infer process render

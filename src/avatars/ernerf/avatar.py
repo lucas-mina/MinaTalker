@@ -171,7 +171,7 @@ class ERNeRFAvatar(BaseAvatar):
                 self.record_video_data(image_fullbody)
 
             
-    def render(self,quit_event,loop=None,audio_track=None,video_track=None):
+    def render(self,quit_event,loop=None,audio_track=None,video_track=None,media_sink=None):
         self.init_customindex()
 
         count=0

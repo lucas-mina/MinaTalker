@@ -6,6 +6,7 @@ from .video import set_audiotype, set_flower_mode, record, download_record
 from .health import health_check
 from .avatar import list_avatars
 from .config import get_config
+from .agora import get_agora_token, agora_join, agora_leave
 
 __all__ = [
     "offer",
@@ -23,4 +24,7 @@ __all__ = [
     "health_check",
     "list_avatars",
     "get_config",
+    "get_agora_token",
+    "agora_join",
+    "agora_leave",
 ]

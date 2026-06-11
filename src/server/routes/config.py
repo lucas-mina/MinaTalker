@@ -2,6 +2,7 @@
 import json
 from aiohttp import web
 
+from src.server.agora.token_service import agora_token_required
 from src.server.state import state
 
 
@@ -14,6 +15,8 @@ async def get_config(request):
                 "enabled": False,
                 "app_id": "",
                 "default_channel": "mina",
+                "publisher_uid": 10001,
+                "token_required": False,
                 "token_expiration_seconds": 3600,
             },
         },
@@ -34,6 +37,8 @@ async def get_config(request):
                 "enabled": bool(getattr(ag, "enabled", False)),
                 "app_id": getattr(ag, "app_id", "") or "",
                 "default_channel": getattr(ag, "default_channel", "mina") or "mina",
+                "publisher_uid": int(getattr(ag, "publisher_uid", 10001) or 10001),
+                "token_required": agora_token_required(ag),
                 "token_expiration_seconds": int(
                     getattr(ag, "token_expiration_seconds", 3600) or 3600
                 ),

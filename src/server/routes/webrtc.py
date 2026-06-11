@@ -9,11 +9,10 @@ from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceServer, RTCCo
 from aiortc.rtcrtpsender import RTCRtpSender
 
 from src.utils.webrtc import HumanPlayer
-from src.avatars.factory import create_avatar
 from src.utils.logging import logger
 from src.server.state import state
 from src.server.utils import randN
-from src.config.loader import find_avatar_entry_by_catalog_id, load_avatar_entries
+from src.server.avatar_session import create_avatar_for_session
 from src.llm.service import remove_session as remove_llm_session
 from src.server.routes.chat import (
     core_llm_session_id_from_request_payload,
@@ -62,107 +61,9 @@ async def handle_offer(sdp: str, type_: str, avatar_id=None, access_token: str |
     offer = RTCSessionDescription(sdp=sdp, type=type_)
 
     sessionid = randN(6)
-    state.add_session(sessionid, None)
     logger.info('sessionid=%d, avatar_id=%s, session num=%d', sessionid, avatar_id, len(state.avatar_streams))
 
-    # Resolve per-avatar config (prompt_file + model_avatar_id) from avatar_config.yaml
-    from copy import deepcopy
-    session_config = deepcopy(state.config)
-    session_avatar_data = state.avatar  # default: preloaded global avatar
-
-    if avatar_id is not None:
-        try:
-            entries = load_avatar_entries()
-            matched = find_avatar_entry_by_catalog_id(entries, avatar_id)
-
-            if matched:
-                # 0. Internal LLM routing: use avatar catalog id as character_id when present
-                catalog_char = matched.get("id")
-                if catalog_char is not None and str(catalog_char).strip():
-                    session_config.llm.character_id = str(catalog_char).strip()
-                    logger.info(
-                        "Using llm.character_id=%s from avatar_config (catalog id)",
-                        session_config.llm.character_id,
-                    )
-
-                # 1. Stamp per-avatar prompt file
-                prompt_file = matched.get("prompt_file")
-                if prompt_file:
-                    session_config.prompt_file = prompt_file
-                    logger.info('Using prompt_file=%s for avatar_id=%s', prompt_file, avatar_id)
-
-                # 2. Per-avatar TTS provider + voice (elevenlabs | inworld | minimax)
-                provider = (matched.get("tts_provider") or "").strip().lower()
-                voice_id = (matched.get("tts_voice_id") or matched.get("elevenlabs_voice_id") or "").strip()
-                tts_model = (matched.get("tts_model") or "").strip()
-                language_boost = (matched.get("language_boost") or "").strip()
-                if not provider and voice_id:
-                    provider = "elevenlabs"
-                if voice_id and provider in ("elevenlabs", "inworld", "minimax"):
-                    session_config.tts.type = provider
-                    session_config.tts.ref_file = voice_id
-                    if tts_model:
-                        session_config.tts.model = tts_model
-                    if language_boost:
-                        session_config.tts.language_boost = language_boost
-                    logger.info(
-                        "Using tts provider=%s voice_id=%s model=%s language_boost=%s for avatar_id=%s",
-                        provider,
-                        voice_id,
-                        tts_model or "(default)",
-                        language_boost or session_config.tts.language_boost,
-                        avatar_id,
-                    )
-                elif voice_id:
-                    logger.warning(
-                        "Unknown tts_provider=%r for avatar_id=%s (voice_id=%s)",
-                        provider,
-                        avatar_id,
-                        voice_id,
-                    )
-
-                # 3. Load the per-avatar model assets (frames/coords/latents)
-                model_avatar_id = matched.get("model_avatar_id")
-                if model_avatar_id:
-                    model_type = state.config.model.type
-                    try:
-                        if model_type == "wav2lip":
-                            from src.avatars.wav2lip.avatar import load_avatar as _load_avatar
-                        elif model_type == "musetalk":
-                            from src.avatars.musetalk.avatar import load_avatar as _load_avatar
-                        else:
-                            _load_avatar = None
-
-                        if _load_avatar:
-                            logger.info(
-                                'Loading avatar assets for model_avatar_id=%s (avatar_id=%s)',
-                                model_avatar_id, avatar_id
-                            )
-                            session_avatar_data = await asyncio.get_event_loop().run_in_executor(
-                                None, _load_avatar, model_avatar_id
-                            )
-                        else:
-                            logger.warning(
-                                'Per-avatar asset loading not supported for model type %s', model_type
-                            )
-                    except Exception:
-                        logger.exception(
-                            'Failed to load avatar assets for model_avatar_id=%s, using default.',
-                            model_avatar_id
-                        )
-            else:
-                logger.warning('No avatar entry found for avatar_id=%s', avatar_id)
-
-        except Exception as e:
-            logger.warning('Failed to resolve avatar config for avatar_id=%s: %s', avatar_id, e)
-
-    # 创建 avatar stream（可能耗时，放线程池）
-    avatar_stream = await asyncio.get_event_loop().run_in_executor(
-        None, create_avatar, session_config, state.model, session_avatar_data, sessionid
-    )
-    if access_token:
-        setattr(avatar_stream, "internal_access_token", access_token)
-    state.add_session(sessionid, avatar_stream)
+    await create_avatar_for_session(sessionid, avatar_id, access_token)
     
     ice_server = RTCIceServer(urls='stun:stun.miwifi.com:3478')
     pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=[ice_server]))
@@ -278,6 +179,7 @@ async def ws_signaling(request):
                 pass
             speaking_task = None
         if sessionid is not None:
+            state.remove_agora_session(sessionid)
             state.remove_session(sessionid)
             remove_llm_session(sessionid)
             sessionid = None
@@ -317,6 +219,32 @@ async def ws_signaling(request):
                 await asyncio.sleep(0.1)
         except asyncio.CancelledError:
             pass
+
+    async def _handle_agora_attach(data: dict):
+        nonlocal sessionid, speaking_task, last_speaking_state, session_access_token, session_llm_session_id
+
+        attach_sid = data.get("sessionid")
+        if attach_sid is None:
+            await _send({"type": "error", "error": "missing sessionid"})
+            return
+        attach_sid = int(attach_sid)
+        if state.avatar_streams.get(attach_sid) is None:
+            await _send({"type": "error", "error": f"session {attach_sid} not found"})
+            return
+        sessionid = attach_sid
+        last_speaking_state = None
+        if data.get("access_token"):
+            session_access_token = data.get("access_token")
+            av = state.avatar_streams.get(sessionid)
+            if av:
+                setattr(av, "internal_access_token", session_access_token)
+        attach_core_sid = core_llm_session_id_from_request_payload(data)
+        if attach_core_sid:
+            session_llm_session_id = attach_core_sid
+        await _send({"type": "agora.attached", "sessionid": sessionid})
+        if speaking_task is not None:
+            speaking_task.cancel()
+        speaking_task = asyncio.create_task(_speaking_state_loop(sessionid))
 
     async def _handle_offer(data: dict):
         nonlocal pc, sessionid, speaking_task, last_speaking_state, session_access_token, session_llm_session_id
@@ -415,7 +343,14 @@ async def ws_signaling(request):
 
                 msg_type = data.get("type")
 
-                if msg_type == "offer":
+                if msg_type == "agora.attach":
+                    try:
+                        await _handle_agora_attach(data)
+                    except Exception as e:
+                        logger.exception("ws_signaling: agora.attach failed: %s", e)
+                        await _send({"type": "error", "error": str(e) or "agora.attach failed"})
+
+                elif msg_type == "offer":
                     try:
                         await _handle_offer(data)
                     except Exception as e:

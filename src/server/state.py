@@ -1,5 +1,5 @@
 """全局状态管理"""
-from typing import Dict, Set
+from typing import Dict, Set, Tuple, Any
 from src.avatars.base import BaseAvatar
 from aiortc import RTCPeerConnection
 
@@ -13,6 +13,9 @@ class ServerState:
         
         # WebRTC 连接管理
         self.pcs: Set[RTCPeerConnection] = set()
+
+        # Agora RTC sessions: sessionid -> (publisher, player)
+        self.agora_sessions: Dict[int, Tuple[Any, Any]] = {}
         
         # 配置和模型
         self.config = None
@@ -42,6 +45,18 @@ class ServerState:
     def remove_peer_connection(self, pc: RTCPeerConnection):
         """移除 WebRTC 连接"""
         self.pcs.discard(pc)
+
+    def add_agora_session(self, sessionid: int, publisher, player):
+        self.agora_sessions[sessionid] = (publisher, player)
+
+    def remove_agora_session(self, sessionid: int):
+        entry = self.agora_sessions.pop(sessionid, None)
+        if entry:
+            _publisher, player = entry
+            try:
+                player.stop()
+            except Exception:
+                pass
 
 
 # 全局状态实例

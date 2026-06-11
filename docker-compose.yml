@@ -1,0 +1,57 @@
+# MinaTalker Docker Compose — uses config/config_wav2lip.yaml, exposes port 8010 (HTTPS).
+#
+# Host bind mounts (repo root = directory of this file):
+#   ./models  → read-only at /models-host; entrypoint copies into minatalker_models volume
+#               (avoids Docker Desktop Windows EIO on large files like wav2lip.pth)
+#   ./data    → direct bind mount (avatar frames; app may write data/records/)
+#
+# Set MINATALKER_PROJECT_DIR in .env if you run compose from another cwd (optional).
+#
+# Usage (from repo root):
+#   docker compose build
+#   docker compose up -d
+#   curl -k https://localhost:8010/health
+
+services:
+  minatalker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: minatalker:wav2lip
+    container_name: minatalker
+    restart: unless-stopped
+    ports:
+      # config_wav2lip.yaml → app.listenport: 8010
+      - "8010:8010"
+    environment:
+      MINATALKER_CONFIG: config/config_wav2lip.yaml
+      # Optional: AGORA_APP_CERTIFICATE, SSL_CN
+    env_file:
+      - docker.env
+    volumes:
+      # Host models (read-only); entrypoint syncs into /app/models named volume
+      - type: bind
+        source: ${MINATALKER_PROJECT_DIR:-.}/models
+        target: /models-host
+        read_only: true
+      - minatalker_models:/app/models
+      # Repo ./data → wav2lip avatar assets (full_imgs, face_imgs, coords.pkl)
+      - type: bind
+        source: ${MINATALKER_PROJECT_DIR:-.}/data
+        target: /app/data
+      - type: bind
+        source: ${MINATALKER_PROJECT_DIR:-.}/config/config_wav2lip.yaml
+        target: /app/config/config_wav2lip.yaml
+        read_only: true
+      - type: bind
+        source: ${MINATALKER_PROJECT_DIR:-.}/config/avatar_config.yaml
+        target: /app/config/avatar_config.yaml
+        read_only: true
+      - type: bind
+        source: ${MINATALKER_PROJECT_DIR:-.}/ssl_certs
+        target: /app/ssl_certs
+      - minatalker_model_cache:/root/.cache
+
+volumes:
+  minatalker_models:
+  minatalker_model_cache:

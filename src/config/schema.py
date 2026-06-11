@@ -40,7 +40,8 @@ class AgoraConfig:
     """
     Agora RTC（可选）：启用后客户端可走 Agora SDK 拉流/推流，替代浏览器直连 aiortc。
 
-    app_certificate 仅服务端用于生成 RTC Token，勿下发前端；可用 ${ENV} 从环境变量读取。
+    app_certificate 可选。不设时走 Agora Testing（仅 App ID，token=null）；
+    设置时服务端签 RTC Token（Secured，生产推荐）。勿下发前端；可用 ${ENV} 读取。
     """
     enabled: bool = False
     app_id: str = ""
@@ -48,6 +49,8 @@ class AgoraConfig:
     token_expiration_seconds: int = 3600
     # 默认频道名（可与 sessionid / room 拼接）；具体策略由前后端约定
     default_channel: str = "mina"
+    # 服务端 Avatar 推流固定 UID（观众订阅此 UID）
+    publisher_uid: int = 10001
 
 
 @dataclass

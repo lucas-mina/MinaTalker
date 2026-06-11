@@ -246,7 +246,7 @@ class BaseAvatar:
             self.custom_audio_index[audiotype] = 0
             self.custom_index[audiotype] = 0
 
-    def process_frames(self,quit_event,loop=None,audio_track=None,video_track=None):
+    def process_frames(self,quit_event,loop=None,audio_track=None,video_track=None,media_sink=None):
         logger.info(f'[帧处理] process_frames 线程启动, sessionid={self.config.sessionid}')
         # 过渡效果用于降低静音/说话切换时的突变
         enable_transition = False
@@ -315,20 +315,24 @@ class BaseAvatar:
             cv2.putText(combine_frame, "Linly-Talker-Stream", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
            
             image = combine_frame
-            new_frame = VideoFrame.from_ndarray(image, format="bgr24")
-            # 子线程推送到 WebRTC 队列
-            asyncio.run_coroutine_threadsafe(video_track._queue.put((new_frame,None)), loop)
+            if video_track is not None and loop is not None:
+                new_frame = VideoFrame.from_ndarray(image, format="bgr24")
+                asyncio.run_coroutine_threadsafe(video_track._queue.put((new_frame, None)), loop)
+            if media_sink is not None:
+                media_sink.push_video(combine_frame)
             self.record_video_data(combine_frame)
 
             for audio_frame in audio_frames:
                 frame,type,eventpoint = audio_frame
                 frame = (frame * 32767).astype(np.int16)
 
-                new_frame = AudioFrame(format='s16', layout='mono', samples=frame.shape[0])
-                new_frame.planes[0].update(frame.tobytes())
-                new_frame.sample_rate=16000
-                # 子线程推送到 WebRTC 队列
-                asyncio.run_coroutine_threadsafe(audio_track._queue.put((new_frame,eventpoint)), loop)
+                if audio_track is not None and loop is not None:
+                    new_frame = AudioFrame(format='s16', layout='mono', samples=frame.shape[0])
+                    new_frame.planes[0].update(frame.tobytes())
+                    new_frame.sample_rate=16000
+                    asyncio.run_coroutine_threadsafe(audio_track._queue.put((new_frame, eventpoint)), loop)
+                if media_sink is not None:
+                    media_sink.push_audio(frame, eventpoint)
                 self.record_audio_data(frame)
         logger.info('basereal process_frames thread stop') 
 

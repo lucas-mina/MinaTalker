@@ -13,6 +13,8 @@ from src.server import routes
 
 async def on_shutdown(app):
     """服务器关闭时的清理操作"""
+    for sid in list(state.agora_sessions.keys()):
+        state.remove_agora_session(sid)
     coros = [pc.close() for pc in state.pcs]
     await asyncio.gather(*coros)
     state.pcs.clear()
@@ -38,6 +40,9 @@ def create_app():
     app.router.add_post("/clear_history", routes.clear_history)
     app.router.add_get("/health", routes.health_check)
     app.router.add_get("/config", routes.get_config)
+    app.router.add_get("/agora/token", routes.get_agora_token)
+    app.router.add_post("/agora/join", routes.agora_join)
+    app.router.add_post("/agora/leave", routes.agora_leave)
     app.router.add_get("/avatars", routes.list_avatars)
     app.router.add_get("/download/{filename}", routes.download_record)
     # 前端静态资源托管

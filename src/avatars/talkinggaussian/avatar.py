@@ -328,7 +328,7 @@ class TalkingGaussianAvatar(BaseAvatar):
             
             self.current_camera_idx += 1
     
-    def render(self, quit_event, loop=None, audio_track=None, video_track=None):
+    def render(self, quit_event, loop=None, audio_track=None, video_track=None, media_sink=None):
         """
         主渲染循环（模仿 ERNeRF）
         在主线程中同步执行音频处理和渲染

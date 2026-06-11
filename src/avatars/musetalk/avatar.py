@@ -359,7 +359,7 @@ class MuseTalkAvatar(BaseAvatar):
         # uses the new avatar without seeing an out-of-range index.
         self.input_latent_list_cycle[:] = new_latents
             
-    def render(self,quit_event,loop=None,audio_track=None,video_track=None):
+    def render(self,quit_event,loop=None,audio_track=None,video_track=None,media_sink=None):
         #if self.opt.asr:
         #     self.audio_stream.warm_up()
 
@@ -374,7 +374,7 @@ class MuseTalkAvatar(BaseAvatar):
         infer_thread.start()
         
         process_quit_event = Event()
-        process_thread = Thread(target=self.process_frames, args=(process_quit_event,loop,audio_track,video_track))
+        process_thread = Thread(target=self.process_frames, args=(process_quit_event,loop,audio_track,video_track), kwargs={"media_sink": media_sink})
         process_thread.start()
 
         

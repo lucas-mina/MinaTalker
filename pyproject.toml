@@ -1,12 +1,12 @@
 [project]
 name = "linly-talker-stream"
 version = "0.1.0"
-description = "Linly-Talker-Stream: 实时流式数字人对话系统 - 模块化多 Avatar 支持，基于 WebRTC 的全双工交互"
+description = "MinaTalker"
 readme = "README.md"
 requires-python = ">=3.10, <3.12"
 license = { text = "Apache-2.0" }
 authors = [
-    { name = "Kedreamix", email = "kedreamix@gmail.com" }
+    { name = "", email = "lucas@minamina.ai" }
 ]
 
 dependencies = [
@@ -25,8 +25,8 @@ dependencies = [
     "scipy",
     "soundfile==0.12.1",
     "torch==2.8.0",
-    "torchvision",
-    "torchaudio",
+    "torchvision==0.23.0",
+    "torchaudio==2.8.0",
     "tqdm",
     "typing-extensions",
     "websockets>=13.0",
@@ -34,6 +34,12 @@ dependencies = [
     "azure-cognitiveservices-speech",
     "logger",
     "transformers==4.46.0",
+]
+
+[project.optional-dependencies]
+# Server-side Agora publisher: Linux/macOS only (no Windows wheels / native SDK).
+agora = [
+    "agora-python-server-sdk; sys_platform == 'linux' or sys_platform == 'darwin'",
 ]
 
 [tool.uv.sources]
