@@ -10,6 +10,8 @@ from aiortc.rtcrtpsender import RTCRtpSender
 
 from src.utils.webrtc import HumanPlayer
 from src.utils.logging import logger
+from src.server.auth.session_access import check_session_access, register_session_owner
+from src.server.auth.jwt_claims import user_id_from_access_token
 from src.server.state import state
 from src.server.utils import randN
 from src.server.avatar_session import create_avatar_for_session
@@ -64,6 +66,11 @@ async def handle_offer(sdp: str, type_: str, avatar_id=None, access_token: str |
     logger.info('sessionid=%d, avatar_id=%s, session num=%d', sessionid, avatar_id, len(state.avatar_streams))
 
     await create_avatar_for_session(sessionid, avatar_id, access_token)
+    register_session_owner(
+        sessionid,
+        user_id_from_access_token(access_token),
+        avatar_id=str(avatar_id).strip() if avatar_id is not None and str(avatar_id).strip() else None,
+    )
     
     ice_server = RTCIceServer(urls='stun:stun.miwifi.com:3478')
     pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=[ice_server]))
@@ -75,10 +82,12 @@ async def handle_offer(sdp: str, type_: str, avatar_id=None, access_token: str |
         if pc.connectionState == "failed":
             await pc.close()
             state.remove_peer_connection(pc)
+            state.agora_session_meta.pop(sessionid, None)
             state.remove_session(sessionid)
             remove_llm_session(sessionid)
         if pc.connectionState == "closed":
             state.remove_peer_connection(pc)
+            state.agora_session_meta.pop(sessionid, None)
             state.remove_session(sessionid)
             remove_llm_session(sessionid)
 
@@ -230,6 +239,11 @@ async def ws_signaling(request):
         attach_sid = int(attach_sid)
         if state.avatar_streams.get(attach_sid) is None:
             await _send({"type": "error", "error": f"session {attach_sid} not found"})
+            return
+        attach_token = data.get("access_token") or session_access_token
+        access_err = check_session_access(attach_sid, attach_token, action="agora.attach")
+        if access_err:
+            await _send({"type": "error", "error": access_err})
             return
         sessionid = attach_sid
         last_speaking_state = None
@@ -392,6 +406,12 @@ async def ws_signaling(request):
                         raw_lang = data.get("lang")
                         if raw_lang is not None and str(raw_lang).strip():
                             params["lang"] = str(raw_lang).strip()
+                        raw_env = data.get("environment")
+                        if raw_env is not None and str(raw_env).strip():
+                            params["environment"] = str(raw_env).strip()
+                        raw_ts = data.get("timestamp")
+                        if raw_ts is not None and str(raw_ts).strip():
+                            params["timestamp"] = str(raw_ts).strip()
                         msg_core_sid = core_llm_session_id_from_request_payload(data)
                         if msg_core_sid:
                             params["session_id"] = msg_core_sid
@@ -411,6 +431,15 @@ async def ws_signaling(request):
 
                 elif msg_type == "interrupt_talk":
                     target_session = webrtc_avatar_sessionid_from_chat_request(sessionid, data)
+                    interrupt_token = data.get("access_token") or session_access_token
+                    access_err = check_session_access(
+                        target_session,
+                        interrupt_token,
+                        action="interrupt",
+                    )
+                    if access_err:
+                        await _send({"type": "interrupt_response", "code": -1, "msg": access_err})
+                        continue
                     avatar_stream = state.avatar_streams.get(target_session)
                     if avatar_stream is None:
                         await _send({"type": "interrupt_response", "code": -1, "msg": f"session {target_session} not found"})

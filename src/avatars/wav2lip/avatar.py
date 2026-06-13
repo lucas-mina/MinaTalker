@@ -27,8 +27,8 @@ from src.avatars.base import BaseAvatar
 
 #from imgcache import ImgCache
 
-from tqdm import tqdm
 from src.utils.logging import logger
+from src.utils.png_io import read_imgs
 
 device = "cuda" if torch.cuda.is_available() else ("mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()) else "cpu")
 
@@ -109,14 +109,6 @@ def warm_up(batch_size,model,modelres):
     img_batch = torch.ones(batch_size, 6, modelres, modelres).to(device)
     mel_batch = torch.ones(batch_size, 1, 80, 16).to(device)
     model(mel_batch, img_batch)
-
-def read_imgs(img_list):
-    frames = []
-    logger.info('reading images...')
-    for img_path in tqdm(img_list):
-        frame = cv2.imread(img_path)
-        frames.append(frame)
-    return frames
 
 def __mirror_index(size, index):
     #size = len(self.coord_list_cycle)
@@ -236,7 +228,7 @@ class Wav2LipAvatar(BaseAvatar):
 
     def paste_back_frame(self,pred_frame,idx:int):
         bbox = self.coord_list_cycle[idx]
-        combine_frame = copy.deepcopy(self.frame_list_cycle[idx])
+        combine_frame = self.frame_list_cycle[idx].copy()
         #combine_frame = copy.deepcopy(self.imagecache.get_img(idx))
         y1, y2, x1, x2 = bbox
         res_frame = cv2.resize(pred_frame.astype(np.uint8),(x2-x1,y2-y1))
@@ -329,6 +321,25 @@ class Wav2LipAvatar(BaseAvatar):
             if video_track and video_track._queue.qsize()>=5:
                 logger.debug('sleep qsize=%d',video_track._queue.qsize())
                 time.sleep(0.04*video_track._queue.qsize()*0.8)
+            elif media_sink is not None:
+                v_backlog = getattr(media_sink, "outbound_video_backlog", 0)
+                buf_cap = getattr(media_sink, "video_out_buffer_capacity", 3)
+                if v_backlog >= max(1, buf_cap - 1):
+                    logger.debug(
+                        'Agora outbound video backlog=%d cap=%d', v_backlog, buf_cap
+                    )
+                    time.sleep(min(0.12, 0.04 * v_backlog * 0.8))
+                elif self.res_frame_queue.qsize() >= self.batch_size:
+                    backlog = self.res_frame_queue.qsize()
+                    logger.debug('Agora render backlog qsize=%d', backlog)
+                    # Cap sleep so lip-sync does not fall multiple seconds behind when inference runs ahead.
+                    time.sleep(min(0.12, 0.04 * backlog * 0.5))
+                else:
+                    # Pace to real-time audio clock; otherwise idle silent frames outrun video.fps (~2x).
+                    step_interval = (self.batch_size * 2) / self.config.audio.fps
+                    elapsed = time.perf_counter() - t
+                    if elapsed < step_interval:
+                        time.sleep(step_interval - elapsed)
                 
             # delay = _starttime+_totalframe*0.04-time.perf_counter() #40ms
             # if delay > 0:

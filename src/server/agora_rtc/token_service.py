@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from src.config.schema import AgoraConfig
-from src.server.agora.token import RtcTokenBuilder, Role_Publisher, Role_Subscriber
+from src.server.agora_rtc.rtc_token import RtcTokenBuilder, Role_Publisher, Role_Subscriber
 from src.utils.logging import logger
 
 

@@ -68,4 +68,4 @@ echo "[entrypoint] models: $(ls -la models 2>/dev/null | head -5 || echo '(unrea
 echo "[entrypoint] data/avatars: $(ls data/avatars 2>/dev/null | head -5 || echo '(empty)')"
 
 echo "[entrypoint] Starting MinaTalker with ${CONFIG_FILE}"
-exec uv run python src/server/app.py --config "${CONFIG_FILE}"
+exec uv run python -m src.server.app --config "${CONFIG_FILE}"

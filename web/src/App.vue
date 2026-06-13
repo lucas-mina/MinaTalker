@@ -287,6 +287,7 @@ import { useI18n } from './composables/useI18n'
 import {
   isInternalAuthConfigured,
   getStoredAccessToken,
+  getStoredUserId,
   startAuthRefreshLoop,
   stopAuthRefreshLoop,
   clearInternalAuth,
@@ -595,6 +596,7 @@ const rtcOptions = {
   onNotification: showNotification,
   onWsMessage: handleWsMessage,
   getAccessToken: getInternalAccessToken,
+  getUserId: getStoredUserId,
   getSessionId: () => {
     const v = String(internalLlmSessionId.value || '').trim()
     if (v) return v

@@ -4,8 +4,29 @@ import json
 from aiohttp import web
 
 from src.utils.logging import logger
+from src.server.auth.session_access import check_session_access
 from src.server.state import state
 from src.config.loader import resolve_avatar_flower_audiotype, resolve_avatar_ex_model_id
+
+
+def _extract_bearer_token(authorization_header: str | None) -> str | None:
+    if not authorization_header:
+        return None
+    parts = authorization_header.strip().split(" ", 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer" and parts[1].strip():
+        return parts[1].strip()
+    return None
+
+
+def _session_access_json_error(sessionid, access_token, action):
+    err = check_session_access(int(sessionid or 0), access_token, action=action)
+    if not err:
+        return None
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps({"code": -1, "msg": err}),
+        status=403,
+    )
 
 
 async def set_audiotype(request):
@@ -13,7 +34,20 @@ async def set_audiotype(request):
     try:
         params = await request.json()
         sessionid = params.get('sessionid', 0)
-        state.avatar_streams[sessionid].set_custom_state(params['audiotype'], params['reinit'])
+        access_token = params.get("access_token") or _extract_bearer_token(request.headers.get("Authorization"))
+        avatar_stream = state.avatar_streams.get(sessionid)
+        if avatar_stream is not None:
+            access_token = access_token or getattr(avatar_stream, "internal_access_token", None)
+        denied = _session_access_json_error(sessionid, access_token, "set_audiotype")
+        if denied:
+            return denied
+        if avatar_stream is None:
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({"code": -1, "msg": f"sessionid {sessionid} not found"}),
+                status=404,
+            )
+        avatar_stream.set_custom_state(params['audiotype'], params['reinit'])
 
         return web.Response(
             content_type="application/json",
@@ -57,6 +91,13 @@ async def set_flower_mode(request):
                 status=400,
             )
 
+        avatar_stream = state.avatar_streams[sessionid]
+        access_token = params.get("access_token") or _extract_bearer_token(request.headers.get("Authorization"))
+        access_token = access_token or getattr(avatar_stream, "internal_access_token", None)
+        denied = _session_access_json_error(sessionid, access_token, "set_flower_mode")
+        if denied:
+            return denied
+
         if avatar_id is None or (isinstance(avatar_id, str) and not avatar_id.strip()):
             return web.Response(
                 content_type="application/json",
@@ -66,7 +107,6 @@ async def set_flower_mode(request):
 
         catalog_avatar_id = avatar_id
 
-        avatar_stream = state.avatar_streams[sessionid]
         if avatar_stream is None:
             return web.Response(
                 content_type="application/json",
@@ -142,8 +182,15 @@ async def record(request):
                 ),
                 status=404
             )
+
+        avatar_stream = state.avatar_streams[sessionid]
+        access_token = params.get("access_token") or _extract_bearer_token(request.headers.get("Authorization"))
+        access_token = access_token or getattr(avatar_stream, "internal_access_token", None)
+        denied = _session_access_json_error(sessionid, access_token, "record")
+        if denied:
+            return denied
         
-        if state.avatar_streams[sessionid] is None:
+        if avatar_stream is None:
             logger.error(f'[录制API] 录制失败: sessionid {sessionid} 的 avatar_stream 为 None')
             return web.Response(
                 content_type="application/json",
@@ -153,7 +200,6 @@ async def record(request):
                 status=500
             )
         
-        avatar_stream = state.avatar_streams[sessionid]
         logger.info(f'[录制API] 找到 avatar_stream: {type(avatar_stream).__name__}')
         logger.info(f'[录制API] avatar_stream.recording 状态: {avatar_stream.recording}')
         logger.info(f'[录制API] avatar_stream 视频尺寸: width={avatar_stream.width}, height={avatar_stream.height}')

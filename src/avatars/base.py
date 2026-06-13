@@ -28,17 +28,14 @@ from fractions import Fraction
 
 from src.tts.factory import create_tts_engine
 from src.utils.logging import logger
+from src.utils.png_io import read_imgs as _read_imgs_png
 
-from tqdm import tqdm
 
-
-def read_imgs(img_list):
-    frames = []
-    logger.info('reading images...')
-    for img_path in tqdm(img_list):
-        frame = cv2.imread(img_path)
-        frames.append(frame)
-    return frames
+def read_imgs(img_list, *, workers=None, show_progress=True):
+    kwargs = {"show_progress": show_progress}
+    if workers is not None:
+        kwargs["workers"] = workers
+    return _read_imgs_png(img_list, **kwargs)
 
 def play_audio(quit_event,queue):        
     import pyaudio
@@ -248,6 +245,7 @@ class BaseAvatar:
 
     def process_frames(self,quit_event,loop=None,audio_track=None,video_track=None,media_sink=None):
         logger.info(f'[帧处理] process_frames 线程启动, sessionid={self.config.sessionid}')
+        idle_idx = 0
         # 过渡效果用于降低静音/说话切换时的突变
         enable_transition = False
         
@@ -262,8 +260,21 @@ class BaseAvatar:
             try:
                 res_frame,idx,audio_frames = self.res_frame_queue.get(block=True, timeout=1)
             except queue.Empty:
+                if quit_event.is_set():
+                    continue
+                if media_sink is not None and getattr(self, "frame_list_cycle", None):
+                    alive = getattr(media_sink, "is_alive", None)
+                    if callable(alive) and not alive():
+                        continue
+                    if getattr(media_sink, "feeds_idle_video_externally", False):
+                        continue
+                    cycle_len = len(self.frame_list_cycle)
+                    if cycle_len > 0:
+                        idle_frame = self.frame_list_cycle[self.mirror_index(cycle_len, idle_idx)]
+                        idle_idx += 1
+                        media_sink.push_video(idle_frame)
                 continue
-            
+
             if enable_transition:
                 # 检测状态变化
                 current_speaking = not (audio_frames[0][1]!=0 and audio_frames[1][1]!=0)
@@ -312,14 +323,19 @@ class BaseAvatar:
                 else:
                     combine_frame = current_frame
 
-            cv2.putText(combine_frame, "Linly-Talker-Stream", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
-           
             image = combine_frame
             if video_track is not None and loop is not None:
                 new_frame = VideoFrame.from_ndarray(image, format="bgr24")
                 asyncio.run_coroutine_threadsafe(video_track._queue.put((new_frame, None)), loop)
             if media_sink is not None:
-                media_sink.push_video(combine_frame)
+                if self.speaking and hasattr(media_sink, "mark_streaming_active"):
+                    media_sink.mark_streaming_active()
+                skip_idle_video = (
+                    not self.speaking
+                    and getattr(media_sink, "feeds_idle_video_externally", False)
+                )
+                if not skip_idle_video:
+                    media_sink.push_video(combine_frame)
             self.record_video_data(combine_frame)
 
             for audio_frame in audio_frames:
@@ -332,7 +348,7 @@ class BaseAvatar:
                     new_frame.sample_rate=16000
                     asyncio.run_coroutine_threadsafe(audio_track._queue.put((new_frame, eventpoint)), loop)
                 if media_sink is not None:
-                    media_sink.push_audio(frame, eventpoint)
+                    media_sink.push_audio(frame, eventpoint, audio_type=type)
                 self.record_audio_data(frame)
         logger.info('basereal process_frames thread stop') 
 

@@ -5,7 +5,7 @@ import asyncio
 import threading
 from typing import Optional
 
-from src.server.agora.publisher import AgoraRTCPublisher
+from src.server.agora_rtc.publisher import AgoraRTCPublisher
 from src.utils.logging import logger
 
 
@@ -46,6 +46,10 @@ class AgoraHumanPlayer:
             self._thread_quit.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                logger.warning(
+                    "AgoraHumanPlayer render thread did not exit within 5s; stopping publisher anyway"
+                )
             self._thread = None
         self._publisher.stop()
         self._container = None

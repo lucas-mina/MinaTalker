@@ -3,9 +3,11 @@ import json
 from aiohttp import web
 import asyncio
 
+from src.llm.env import resolve_llm_base_url_for_session
 from src.llm.service import clear_session_history, llm_response
 from src.llm.transient_network import user_message_chat_http
 from src.utils.logging import logger
+from src.server.auth.session_access import check_session_access
 from src.server.state import state
 
 
@@ -20,6 +22,14 @@ def _get_avatar_stream(sessionid):
 
 def _optional_lang(params: dict) -> str | None:
     raw = params.get("lang")
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    return s or None
+
+
+def _optional_timestamp(params: dict) -> str | None:
+    raw = params.get("timestamp")
     if raw is None:
         return None
     s = str(raw).strip()
@@ -114,12 +124,21 @@ async def process_human_message(params: dict) -> dict:
         logger.warning(f'[CHAT] session {sessionid} not found (already closed?)')
         return {"code": -1, "msg": f"session {sessionid} not found"}
 
+    access_token = params.get("access_token") or getattr(avatar_stream, "internal_access_token", None)
+    if sessionid:
+        access_err = check_session_access(sessionid, access_token, action="chat")
+        if access_err:
+            return {"code": -1, "msg": access_err}
+
     if params.get('interrupt'):
         avatar_stream.flush_talk()
 
-    access_token = params.get("access_token") or getattr(avatar_stream, "internal_access_token", None)
     if access_token and str(access_token).strip():
         setattr(avatar_stream, "internal_access_token", str(access_token).strip())
+
+    client_env = params.get("environment")
+    if client_env is not None and str(client_env).strip():
+        setattr(avatar_stream, "client_environment", str(client_env).strip())
 
     if params.get('type') == 'echo':
         text = params.get('text', '')
@@ -142,6 +161,12 @@ async def process_human_message(params: dict) -> dict:
         core_sid = _optional_session_id(params)
         if core_sid:
             logger.info("[CHAT] Core LLM session_id=%s (avatar sessionid=%s)", core_sid, sessionid)
+        fallback_base_url = (
+            global_llm.base_url if global_llm else "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        )
+        resolved_base_url = resolve_llm_base_url_for_session(
+            client_env, avatar_stream, fallback_base_url
+        )
         response_text = await asyncio.get_event_loop().run_in_executor(
             None,
             llm_response,
@@ -149,13 +174,14 @@ async def process_human_message(params: dict) -> dict:
             avatar_stream,
             global_llm.provider if global_llm else "openai",
             global_llm.api_key if global_llm else None,
-            global_llm.base_url if global_llm else "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            resolved_base_url,
             global_llm.model if global_llm else "qwen-plus",
             access_token,
             global_llm.character_id if global_llm else None,
             _optional_lang(params),
             core_sid,
             params.get("request_id"),
+            _optional_timestamp(params),
         )
     else:
         return {"code": -1, "msg": f"unknown type: {params.get('type')}"}
@@ -186,6 +212,11 @@ async def interrupt_talk(request):
     try:
         params = await request.json()
         sessionid = params.get('sessionid', 0)
+        access_token = params.get("access_token") or _extract_bearer_token(request.headers.get("Authorization"))
+
+        access_err = check_session_access(int(sessionid or 0), access_token, action="interrupt")
+        if access_err:
+            return _json({"code": -1, "msg": access_err})
 
         avatar_stream = _get_avatar_stream(sessionid)
         if avatar_stream is None:
@@ -205,6 +236,11 @@ async def is_speaking(request):
     try:
         params = await request.json()
         sessionid = params.get('sessionid', 0)
+        access_token = params.get("access_token") or _extract_bearer_token(request.headers.get("Authorization"))
+
+        access_err = check_session_access(int(sessionid or 0), access_token, action="is_speaking")
+        if access_err:
+            return _json({"code": -1, "msg": access_err})
 
         avatar_stream = _get_avatar_stream(sessionid)
         if avatar_stream is None:
@@ -222,7 +258,15 @@ async def clear_history(request):
     try:
         params = await request.json()
         sessionid = params.get('sessionid', 0)
-        
+        access_token = params.get("access_token") or _extract_bearer_token(request.headers.get("Authorization"))
+
+        access_err = check_session_access(int(sessionid or 0), access_token, action="clear_history")
+        if access_err:
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({"code": -1, "msg": access_err}),
+            )
+
         clear_session_history(sessionid)
         
         return web.Response(

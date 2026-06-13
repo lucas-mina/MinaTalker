@@ -5,6 +5,7 @@
 
 const ACCESS_KEY = 'internal_access_token'
 const REFRESH_KEY = 'internal_refresh_token'
+const USER_ID_KEY = 'internal_user_id'
 
 const REFRESH_INTERVAL_MS = 10 * 60 * 1000
 
@@ -105,28 +106,54 @@ function persistOptionalLocal(refreshToken) {
   }
 }
 
+function extractUserId(json) {
+  if (!json || typeof json !== 'object') return null
+  const direct = json.user_id ?? json.userId ?? json.id
+  if (direct != null && String(direct).trim()) return String(direct).trim()
+  const nested = json.user?.id ?? json.user?.user_id ?? json.user?.userId
+  if (nested != null && String(nested).trim()) return String(nested).trim()
+  return null
+}
+
 function extractTokens(json) {
   if (!json || typeof json !== 'object') return null
   const access = json.access_token ?? json.accessToken ?? json.token
   if (!access || typeof access !== 'string') return null
   const refresh = json.refresh_token ?? json.refreshToken ?? null
-  return { access: access.trim(), refresh: typeof refresh === 'string' ? refresh.trim() : null }
+  const userId = extractUserId(json)
+  return {
+    access: access.trim(),
+    refresh: typeof refresh === 'string' ? refresh.trim() : null,
+    userId,
+  }
 }
 
-export function persistTokens({ access, refresh }) {
+export function persistTokens({ access, refresh, userId }) {
   if (access) sessionStorage.setItem(ACCESS_KEY, access)
   else sessionStorage.removeItem(ACCESS_KEY)
   if (refresh) sessionStorage.setItem(REFRESH_KEY, refresh)
   else sessionStorage.removeItem(REFRESH_KEY)
+  if (userId) sessionStorage.setItem(USER_ID_KEY, userId)
+  else sessionStorage.removeItem(USER_ID_KEY)
   persistOptionalLocal(refresh)
 }
 
 export function clearInternalAuth() {
   sessionStorage.removeItem(ACCESS_KEY)
   sessionStorage.removeItem(REFRESH_KEY)
+  sessionStorage.removeItem(USER_ID_KEY)
   localStorage.removeItem(ACCESS_KEY)
   localStorage.removeItem(REFRESH_KEY)
+  localStorage.removeItem(USER_ID_KEY)
   sessionStorage.removeItem('internal_auth_skip')
+}
+
+export function getStoredUserId() {
+  const s = sessionStorage.getItem(USER_ID_KEY)
+  if (s && s.trim()) return s.trim()
+  const l = localStorage.getItem(USER_ID_KEY)
+  if (l && l.trim()) return l.trim()
+  return ''
 }
 
 export async function loginInternalAuth(username, password) {
@@ -164,7 +191,7 @@ export async function loginInternalAuth(username, password) {
 
   const tokens = extractTokens(json)
   if (!tokens) throw new Error('Login response missing access_token')
-  persistTokens({ access: tokens.access, refresh: tokens.refresh })
+  persistTokens({ access: tokens.access, refresh: tokens.refresh, userId: tokens.userId })
   return tokens
 }
 
@@ -217,7 +244,11 @@ export async function refreshInternalAccessToken() {
     clearInternalAuth()
     return false
   }
-  persistTokens({ access: tokens.access, refresh: tokens.refresh || rt })
+  persistTokens({
+    access: tokens.access,
+    refresh: tokens.refresh || rt,
+    userId: tokens.userId || getStoredUserId() || undefined,
+  })
   return true
 }
 

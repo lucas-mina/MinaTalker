@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agora RTC Test Viewer</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+      background: #0f1117;
+      color: #e8eaed;
+    }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 16px; }
+    h1 { font-size: 1.25rem; margin: 0 0 8px; }
+    .hint { color: #9aa0a6; font-size: 0.9rem; margin-bottom: 16px; line-height: 1.45; }
+    .panel {
+      background: #1a1d27;
+      border: 1px solid #2a2f3a;
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 14px;
+    }
+    label { display: block; font-size: 0.8rem; color: #9aa0a6; margin-bottom: 4px; }
+    input[type="text"], input[type="number"] {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid #3c4048;
+      background: #0f1117;
+      color: #e8eaed;
+      margin-bottom: 10px;
+    }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    button {
+      padding: 8px 14px;
+      border-radius: 8px;
+      border: 0;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .btn-primary { background: #4f8cff; color: #fff; }
+    .btn-secondary { background: #3c4048; color: #fff; }
+    .btn-danger { background: #c5221f; color: #fff; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .status { font-size: 0.85rem; margin-top: 8px; }
+    .status.ok { color: #81c995; }
+    .status.warn { color: #fbbc04; }
+    .status.err { color: #f28b82; }
+    .video-box {
+      position: relative;
+      background: #000;
+      border-radius: 10px;
+      overflow: hidden;
+      aspect-ratio: 9 / 16;
+      max-height: 70vh;
+      margin: 0 auto;
+    }
+    video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+    .log {
+      height: 220px;
+      overflow: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.4;
+      background: #0b0d12;
+      border: 1px solid #2a2f3a;
+      border-radius: 8px;
+      padding: 8px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .kv { font-size: 0.85rem; margin-top: 8px; }
+    .kv code { color: #8ab4f8; }
+    label.inline { display: inline-flex; align-items: center; gap: 6px; margin: 0 12px 10px 0; color: #e8eaed; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Agora RTC Test Viewer</h1>
+    <p class="hint">
+      Agora channel = <code>mina_</code> + sha256(lower(user_id + ":" + avatar_id))[:32].
+      <code>avatar_id</code> is catalog id from avatar_config (e.g. Carey UUID).
+      <code>session_id</code> is Core chat thread — separate from the RTC room.
+    </p>
+
+    <div class="panel">
+      <label for="userId">user_id</label>
+      <input id="userId" type="text" placeholder="u-98d0f7a6" />
+
+      <label for="avatarId">avatar_id (catalog UUID)</label>
+      <input id="avatarId" type="text" placeholder="0187702f-fcc7-40fa-a8e9-6f081ba5b24b" />
+
+      <label for="sessionId">Core session_id (optional, LLM chat only)</label>
+      <input id="sessionId" type="text" placeholder="optional chat thread uuid" />
+
+      <label for="channel">Resolved Agora channel (from server)</label>
+      <input id="channel" type="text" readonly placeholder="Click Resolve channel" />
+
+      <div class="row">
+        <div style="flex:1; min-width:120px;">
+          <label for="publisherUid">Publisher UID filter (0 = subscribe all)</label>
+          <input id="publisherUid" type="number" value="10001" min="0" />
+        </div>
+        <div style="flex:1; min-width:120px;">
+          <label for="audienceUid">Your audience UID</label>
+          <input id="audienceUid" type="number" value="0" min="0" />
+        </div>
+      </div>
+
+      <label class="inline"><input id="subscribeAll" type="checkbox" /> Subscribe all remote users (ignore UID filter)</label>
+
+      <div class="row">
+        <button id="btnResolve" class="btn-secondary" type="button">Resolve channel</button>
+        <button id="btnServerJoin" class="btn-secondary" type="button">Start server publisher (/agora/join)</button>
+        <button id="btnJoin" class="btn-primary" type="button">Join as audience</button>
+        <button id="btnLeave" class="btn-danger" type="button" disabled>Leave</button>
+      </div>
+      <div id="status" class="status">Idle</div>
+      <div id="kv" class="kv"></div>
+    </div>
+
+    <div class="panel video-box">
+      <video id="remoteVideo" autoplay playsinline muted></video>
+    </div>
+
+    <div class="panel">
+      <label>Event log</label>
+      <div id="log" class="log"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import AgoraRTC from 'https://esm.sh/agora-rtc-sdk-ng@4.24.4'
+
+    const DEFAULT_USER_ID = 'u-98d0f7a6'
+    const DEFAULT_AVATAR_ID = '0187702f-fcc7-40fa-a8e9-6f081ba5b24b'
+    const qs = new URLSearchParams(location.search)
+
+    const els = {
+      userId: document.getElementById('userId'),
+      avatarId: document.getElementById('avatarId'),
+      sessionId: document.getElementById('sessionId'),
+      channel: document.getElementById('channel'),
+      publisherUid: document.getElementById('publisherUid'),
+      audienceUid: document.getElementById('audienceUid'),
+      subscribeAll: document.getElementById('subscribeAll'),
+      btnResolve: document.getElementById('btnResolve'),
+      btnServerJoin: document.getElementById('btnServerJoin'),
+      btnJoin: document.getElementById('btnJoin'),
+      btnLeave: document.getElementById('btnLeave'),
+      status: document.getElementById('status'),
+      kv: document.getElementById('kv'),
+      log: document.getElementById('log'),
+      video: document.getElementById('remoteVideo'),
+    }
+
+    els.userId.value = qs.get('user_id') || DEFAULT_USER_ID
+    els.avatarId.value = qs.get('avatar_id') || DEFAULT_AVATAR_ID
+    els.sessionId.value = qs.get('session_id') || ''
+
+    function roomQuery() {
+      const q = new URLSearchParams()
+      const userId = (els.userId.value || '').trim()
+      const avatarId = (els.avatarId.value || '').trim()
+      const sessionId = (els.sessionId.value || '').trim()
+      if (userId) q.set('user_id', userId)
+      if (avatarId) q.set('avatar_id', avatarId)
+      if (sessionId) q.set('session_id', sessionId)
+      return q.toString()
+    }
+
+    let client = null
+    let remoteVideoTrack = null
+    let remoteAudioTrack = null
+    let appConfig = null
+    let lastJoinPayload = null
+    let waitPublisherTimer = null
+
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms))
+    }
+
+    function nextAudienceUid() {
+      return 20000 + Math.floor(Math.random() * 70000)
+    }
+
+    function log(msg, level = 'info') {
+      const ts = new Date().toISOString().slice(11, 23)
+      const line = `[${ts}] ${msg}`
+      els.log.textContent += line + '\n'
+      els.log.scrollTop = els.log.scrollHeight
+      if (level === 'error') console.error(line)
+      else console.log(line)
+    }
+
+    function setStatus(text, cls = '') {
+      els.status.textContent = text
+      els.status.className = 'status ' + cls
+    }
+
+    function renderKv(data) {
+      if (!data) { els.kv.innerHTML = ''; return }
+      els.kv.innerHTML = [
+        `<div>app_id: <code>${data.app_id || '?'}</code></div>`,
+        `<div>channel: <code>${data.channel || '?'}</code></div>`,
+        `<div>sessionid: <code>${data.sessionid ?? 'n/a'}</code></div>`,
+        `<div>publisher_uid: <code>${data.publisher_uid ?? '?'}</code></div>`,
+        `<div>video_codec: <code>${data.video_codec || '?'}</code></div>`,
+        `<div>token_required: <code>${data.token_required}</code></div>`,
+      ].join('')
+    }
+
+    async function fetchJson(url, opts) {
+      const res = await fetch(url, opts)
+      const text = await res.text()
+      if (!res.ok) throw new Error(text || `${res.status} ${url}`)
+      return text ? JSON.parse(text) : {}
+    }
+
+    async function loadConfig() {
+      appConfig = await fetchJson('/config')
+      const ag = appConfig?.webrtc?.agora || {}
+      log(`config loaded: agora.enabled=${ag.enabled}, app_id=${ag.app_id}, publisher_uid=${ag.publisher_uid}`)
+      if (ag.publisher_uid) els.publisherUid.value = String(ag.publisher_uid)
+      return ag
+    }
+
+    function resolveWebCodec(codec) {
+      const allowed = new Set(['av1', 'h264', 'vp8', 'vp9', 'h265'])
+      const name = String(codec || 'h264').trim().toLowerCase()
+      return allowed.has(name) ? name : 'h264'
+    }
+
+    function shouldSubscribe(uid) {
+      if (els.subscribeAll.checked) return true
+      const filter = Number(els.publisherUid.value)
+      if (!filter) return true
+      return Number(uid) === filter
+    }
+
+    async function subscribeUser(user, mediaType) {
+      if (!shouldSubscribe(user.uid)) {
+        log(`skip uid=${user.uid} media=${mediaType} (UID filter=${els.publisherUid.value})`, 'warn')
+        return
+      }
+      await client.subscribe(user, mediaType)
+      log(`subscribed uid=${user.uid} media=${mediaType}`)
+      if (mediaType === 'video' && user.videoTrack) {
+        if (remoteVideoTrack && remoteVideoTrack !== user.videoTrack) {
+          try { remoteVideoTrack.stop() } catch (_) {}
+        }
+        remoteVideoTrack = user.videoTrack
+        els.video.muted = false
+        await remoteVideoTrack.play(els.video)
+        setStatus(`Playing video from uid ${user.uid}`, 'ok')
+      }
+      if (mediaType === 'audio' && user.audioTrack) {
+        if (remoteAudioTrack && remoteAudioTrack !== user.audioTrack) {
+          try { remoteAudioTrack.stop() } catch (_) {}
+        }
+        remoteAudioTrack = user.audioTrack
+        await remoteAudioTrack.play()
+        log(`audio playing uid=${user.uid}`)
+      }
+    }
+
+    async function subscribeExisting() {
+      if (!client) return false
+      let sawPublisher = false
+      for (const user of client.remoteUsers) {
+        log(`remote user uid=${user.uid} hasVideo=${user.hasVideo} hasAudio=${user.hasAudio}`)
+        if (user.hasVideo || user.hasAudio) {
+          if (user.hasVideo) {
+            await subscribeUser(user, 'video')
+            sawPublisher = true
+          }
+          if (user.hasAudio) await subscribeUser(user, 'audio')
+        } else if (Number(user.uid) === Number(els.publisherUid.value)) {
+          log(`publisher uid=${user.uid} in channel but hasVideo=false — waiting for user-published`, 'warn')
+        }
+      }
+      if (!sawPublisher && !client.remoteUsers.length) {
+        log('no remote users in channel yet — waiting for publisher', 'warn')
+        setStatus('Joined channel but no publisher detected yet', 'warn')
+      }
+      return sawPublisher
+    }
+
+    function clearWaitPublisherTimer() {
+      if (waitPublisherTimer) {
+        clearInterval(waitPublisherTimer)
+        waitPublisherTimer = null
+      }
+    }
+
+    function startWaitForPublisher() {
+      clearWaitPublisherTimer()
+      let attempts = 0
+      waitPublisherTimer = setInterval(async () => {
+        if (!client) {
+          clearWaitPublisherTimer()
+          return
+        }
+        attempts += 1
+        const ok = await subscribeExisting()
+        if (ok) {
+          clearWaitPublisherTimer()
+          return
+        }
+        if (attempts >= 30) {
+          log('publisher still not visible after 60s — check server Agora logs', 'error')
+          clearWaitPublisherTimer()
+        }
+      }, 2000)
+    }
+
+    function releaseTracks() {
+      if (remoteVideoTrack) {
+        try { remoteVideoTrack.stop() } catch (_) {}
+        remoteVideoTrack = null
+      }
+      if (remoteAudioTrack) {
+        try { remoteAudioTrack.stop() } catch (_) {}
+        remoteAudioTrack = null
+      }
+      els.video.srcObject = null
+    }
+
+    async function leaveChannel() {
+      clearWaitPublisherTimer()
+      releaseTracks()
+      if (client) {
+        try { await client.leave() } catch (e) { log(`leave error: ${e.message}`, 'error') }
+        client = null
+      }
+      els.btnLeave.disabled = true
+      setStatus('Left channel')
+    }
+
+    async function resolveChannel() {
+      const query = roomQuery()
+      if (!query.includes('user_id=') || !query.includes('avatar_id=')) {
+        throw new Error('user_id and avatar_id are required')
+      }
+      const data = await fetchJson(`/agora/channel?${query}`)
+      els.channel.value = data.channel
+      log(`resolved user_id=${data.user_id} avatar_id=${data.avatar_id} -> channel=${data.channel} publisher_active=${data.publisher_active}`)
+      return data
+    }
+
+    async function startServerPublisher() {
+      setStatus('Starting server publisher via POST /agora/join ...')
+      log('POST /agora/join')
+      const body = {}
+      const userId = (els.userId.value || '').trim()
+      const avatarId = (els.avatarId.value || '').trim()
+      const sessionId = (els.sessionId.value || '').trim()
+      if (userId) body.user_id = userId
+      if (avatarId) body.avatar_id = avatarId
+      if (sessionId) body.session_id = sessionId
+      const payload = await fetchJson('/agora/join', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      lastJoinPayload = payload
+      renderKv(payload)
+      els.channel.value = payload.channel
+      if (payload.publisher_uid != null) els.publisherUid.value = String(payload.publisher_uid)
+      log(`server join ok sessionid=${payload.sessionid} channel=${payload.channel} reused=${payload.reused}`)
+      setStatus(`Server publishing on ${payload.channel}`, 'ok')
+      return payload
+    }
+
+    async function joinAsAudience(overrideChannel, opts = {}) {
+      const ag = appConfig?.webrtc?.agora || await loadConfig()
+      if (!ag.enabled) {
+        throw new Error('Agora is disabled in server config (webrtc.agora.enabled=false)')
+      }
+
+      const sessionId = (els.sessionId.value || '').trim()
+      let channel = (overrideChannel || els.channel.value || '').trim()
+      if (!channel) {
+        channel = (await resolveChannel()).channel
+      }
+      if (!channel) throw new Error('channel name is required (resolve user_id + avatar_id first)')
+
+      if (!opts.skipLeave) {
+        await leaveChannel()
+      }
+
+      const audienceUid = opts.audienceUid ?? (Number(els.audienceUid.value) || nextAudienceUid())
+      els.audienceUid.value = String(audienceUid)
+      let token = null
+      let videoCodec = resolveWebCodec(ag.video_codec)
+      let appId = (ag.app_id || '').trim()
+
+      const useJoinToken = !opts.forceFreshToken
+        && lastJoinPayload
+        && lastJoinPayload.channel === channel
+        && lastJoinPayload.token
+
+      if (useJoinToken) {
+        token = lastJoinPayload.token_required === false ? null : (lastJoinPayload.token || null)
+        videoCodec = resolveWebCodec(lastJoinPayload.video_codec || videoCodec)
+        appId = (lastJoinPayload.app_id || appId).trim()
+        renderKv(lastJoinPayload)
+        log(`using token from /agora/join response for channel=${channel}`)
+      } else {
+        const query = roomQuery()
+        const tokenQuery = query
+          ? `${query}&role=audience&uid=${audienceUid}`
+          : `channel=${encodeURIComponent(channel)}&role=audience&uid=${audienceUid}`
+        const tokenRes = await fetchJson(`/agora/token?${tokenQuery}`)
+        token = tokenRes.token_required === false ? null : (tokenRes.token || null)
+        renderKv({ ...ag, channel: tokenRes.channel || channel, token_required: tokenRes.token_required })
+        log(`fetched token for channel=${tokenRes.channel || channel} audience_uid=${audienceUid}`)
+      }
+
+      client = AgoraRTC.createClient({ mode: 'live', codec: videoCodec })
+      client.on('connection-state-change', (cur, prev, reason) => {
+        log(`connection-state ${prev} -> ${cur} reason=${reason ?? 'n/a'}`)
+      })
+      client.on('user-joined', (user) => {
+        log(`event user-joined uid=${user.uid}`)
+      })
+      client.on('user-published', async (user, mediaType) => {
+        log(`event user-published uid=${user.uid} media=${mediaType}`)
+        try { await subscribeUser(user, mediaType) } catch (e) { log(`subscribe failed: ${e.message}`, 'error') }
+      })
+      client.on('user-unpublished', (user, mediaType) => {
+        log(`event user-unpublished uid=${user.uid} media=${mediaType}`)
+      })
+      client.on('user-left', (user) => {
+        log(`event user-left uid=${user.uid}`)
+      })
+
+      await client.setClientRole('audience')
+      log(`join app_id=${appId} channel=${channel} uid=${audienceUid} codec=${videoCodec}`)
+      const assignedUid = await client.join(appId, channel, token, audienceUid)
+      log(`joined channel as uid=${assignedUid}`)
+      els.btnLeave.disabled = false
+      setStatus(`Joined ${channel} — waiting for publisher uid ${els.publisherUid.value}`, 'ok')
+      await subscribeExisting()
+      startWaitForPublisher()
+    }
+
+    els.btnResolve.addEventListener('click', async () => {
+      els.btnResolve.disabled = true
+      try {
+        await loadConfig()
+        await resolveChannel()
+        setStatus('Channel resolved', 'ok')
+      } catch (e) {
+        log(`resolve failed: ${e.message}`, 'error')
+        setStatus(e.message, 'err')
+      } finally {
+        els.btnResolve.disabled = false
+      }
+    })
+
+    els.btnServerJoin.addEventListener('click', async () => {
+      els.btnServerJoin.disabled = true
+      try {
+        await loadConfig()
+        await leaveChannel()
+        const payload = await startServerPublisher()
+        log('waiting 2s for server publisher on_connected + publish_video ...')
+        await sleep(2000)
+        await joinAsAudience(payload.channel, { forceFreshToken: true })
+      } catch (e) {
+        log(`server join failed: ${e.message}`, 'error')
+        setStatus(e.message, 'err')
+      } finally {
+        els.btnServerJoin.disabled = false
+      }
+    })
+
+    els.btnJoin.addEventListener('click', async () => {
+      els.btnJoin.disabled = true
+      try {
+        await loadConfig()
+        const resolved = await resolveChannel()
+        if (!resolved.publisher_active) {
+          log('publisher_active=false — click Start server publisher first', 'warn')
+          setStatus('No active publisher on server. Use Start server publisher first.', 'warn')
+          return
+        }
+        await joinAsAudience(undefined, { forceFreshToken: true })
+      } catch (e) {
+        log(`join failed: ${e.message}`, 'error')
+        setStatus(e.message, 'err')
+      } finally {
+        els.btnJoin.disabled = false
+      }
+    })
+
+    els.btnLeave.addEventListener('click', async () => {
+      await leaveChannel()
+    })
+
+    loadConfig()
+      .then(async () => {
+        setStatus('Ready')
+        try { await resolveChannel() } catch (_) {}
+      })
+      .catch((e) => {
+        log(`config load failed: ${e.message}`, 'error')
+        setStatus('Cannot reach /config — is backend running?', 'err')
+      })
+  </script>
+</body>
+</html>

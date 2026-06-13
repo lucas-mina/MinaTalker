@@ -116,6 +116,12 @@ export default defineConfig(({ mode }) => ({
         changeOrigin: true,
         secure: false
       },
+      // Must not match /agora-test.html (prefix /agora would hijack it).
+      '^/agora/': {
+        target: backendTarget,
+        changeOrigin: true,
+        secure: false
+      },
       '/ws': {
         target: backendTarget,
         changeOrigin: true,
@@ -128,6 +134,11 @@ export default defineConfig(({ mode }) => ({
         secure: false
       },
       '/is_speaking': {
+        target: backendTarget,
+        changeOrigin: true,
+        secure: false
+      },
+      '/clear_history': {
         target: backendTarget,
         changeOrigin: true,
         secure: false

@@ -3,6 +3,7 @@
 from typing import Optional
 
 from src.avatars.base import BaseAvatar
+from src.llm.env import normalize_llm_base_url
 from src.llm.factory import create_llm_engine
 from src.llm.transient_network import is_transient_llm_network_error
 from src.utils.logging import logger
@@ -23,9 +24,11 @@ def llm_response(
     lang: str | None = None,
     session_id: str | None = None,
     voice_request_id: str | None = None,
+    timestamp: str | None = None,
 ) -> str:
     """调用 LLM 并将响应流式推送到 avatar"""
     try:
+        base_url = normalize_llm_base_url(base_url)
         config = getattr(avatar_stream, 'config', None)
         sessionid = getattr(avatar_stream, 'sessionid', 0)
 
@@ -61,8 +64,26 @@ def llm_response(
         elif normalized_provider == "internal":
             llm = _session_llm_instances[session_key]
             current_character_id = getattr(llm, "character_id", None)
+            current_base_url = getattr(llm, "base_url", None)
             if current_character_id != resolved_character_id:
                 logger.info("Refreshing internal LLM for session %s (character_id changed)", sessionid)
+                _session_llm_instances[session_key] = create_llm_engine(
+                    llm_type=provider,
+                    config=config,
+                    parent=avatar_stream,
+                    api_key=resolved_api_key,
+                    base_url=base_url,
+                    model=model,
+                    max_history=10,
+                    character_id=resolved_character_id,
+                )
+            elif current_base_url != base_url:
+                logger.info(
+                    "Refreshing internal LLM for session %s (base_url changed %s → %s)",
+                    sessionid,
+                    current_base_url,
+                    base_url,
+                )
                 _session_llm_instances[session_key] = create_llm_engine(
                     llm_type=provider,
                     config=config,
@@ -90,6 +111,7 @@ def llm_response(
                     lang=lang,
                     session_id=session_id,
                     voice_request_id=voice_request_id,
+                    timestamp=timestamp,
                 )
             except Exception as e:
                 last_exc = e

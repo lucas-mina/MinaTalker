@@ -13,7 +13,12 @@ if sys.platform == "win32":
     except (AttributeError, OSError):
         pass
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(_project_root)
+# `python src/server/app.py` puts src/server on sys.path[0], shadowing pip `agora`.
+_server_dir = os.path.dirname(os.path.abspath(__file__))
+if sys.path and os.path.normpath(sys.path[0]) == os.path.normpath(_server_dir):
+    sys.path.pop(0)
 
 import json
 import argparse
@@ -62,6 +67,17 @@ def main():
                 "(agora-python-server-sdk). Use WSL/Docker for local dev, or "
                 "set webrtc.agora.enabled=false and use aiortc on Windows."
             )
+        else:
+            try:
+                from src.server.agora_rtc.publisher import _ensure_sdk, init_agora_service
+
+                _ensure_sdk()
+                app_id = (getattr(_agora, "app_id", None) or "").strip()
+                if app_id:
+                    init_agora_service(app_id)
+                logger.info("Agora server SDK ready (process singleton initialized)")
+            except Exception as exc:
+                logger.error("Agora server SDK not ready at startup: %s", exc)
     else:
         apply_webrtc_outbound_video_bitrate(state.config.webrtc)
     
@@ -96,10 +112,12 @@ def main():
     state.model, state.avatar = prepare_avatar_model(state.config)
     logger.info("模型加载完成")
 
-    # 预热 ASR，避免首个 /asr 请求在实时检测中触发模型加载卡顿
+    # 预热 ASR（仅 server/auto 模式；browser 用客户端识别）
     asr_cfg = state.config.asr if state.config else None
-    asr_mode = str(getattr(asr_cfg, "mode", "server")).lower()
-    if asr_mode in ("server", "auto"):
+    asr_mode = str(getattr(asr_cfg, "mode", "browser")).lower()
+    if asr_mode == "browser":
+        logger.info("[ASR] mode=browser — server SenseVoice disabled, client handles speech")
+    elif asr_mode in ("server", "auto"):
         try:
             asr_engine = get_asr_engine(
                 config=state.config,

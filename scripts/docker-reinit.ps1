@@ -16,7 +16,7 @@ Set-Location $Root
 
 $EnvFile = Join-Path $Root "docker.env"
 if (-not (Test-Path $EnvFile)) {
-    Write-Error "Missing docker.env — copy from docker.env.example"
+    Write-Error "Missing docker.env - copy from docker.env.example"
 }
 
 $ComposeArgs = @(

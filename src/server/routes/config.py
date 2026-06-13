@@ -2,14 +2,16 @@
 import json
 from aiohttp import web
 
-from src.server.agora.token_service import agora_token_required
+from src.server.agora_rtc.token_service import agora_token_required
+from src.server.agora_rtc.codec import web_client_codec
+from src.server.agora_rtc.channel_id import CHANNEL_HASH_HEX_LEN
 from src.server.state import state
 
 
 async def get_config(request):
     """Return public config the client needs (e.g. asr.mode to force server ASR)."""
     payload = {
-        "asr": {"mode": "server", "type": "sensevoice", "vad": {"enabled": True}},
+        "asr": {"mode": "browser", "type": "whisper", "vad": {"enabled": False}},
         "webrtc": {
             "agora": {
                 "enabled": False,
@@ -18,6 +20,7 @@ async def get_config(request):
                 "publisher_uid": 10001,
                 "token_required": False,
                 "token_expiration_seconds": 3600,
+                "video_codec": "h264",
             },
         },
     }
@@ -42,6 +45,9 @@ async def get_config(request):
                 "token_expiration_seconds": int(
                     getattr(ag, "token_expiration_seconds", 3600) or 3600
                 ),
+                "video_codec": web_client_codec(getattr(ag, "video_codec", None)),
+                "channel_id_from_session_id": f"sha256_lower_{CHANNEL_HASH_HEX_LEN}",
+                "channel_id_from_user_avatar": f"sha256_lower(user_id:avatar_id)_{CHANNEL_HASH_HEX_LEN}",
             }
     return web.Response(
         content_type="application/json",

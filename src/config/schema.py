@@ -51,6 +51,18 @@ class AgoraConfig:
     default_channel: str = "mina"
     # 服务端 Avatar 推流固定 UID（观众订阅此 UID）
     publisher_uid: int = 10001
+    # 出站视频编码：h264 | av1 | vp8 | vp9 | h265（默认 h264；Web 须与 join 返回的 video_codec 一致）
+    video_codec: str = "h264"
+    # SenderOptions.target_bitrate kbps；0=Agora STANDARD_BITRATE（SDK 自适应 + CC，推荐）
+    video_target_bitrate_kbps: int = 0
+    # false=仅推 TTS/说话 PCM，静音不推 Agora（省带宽）；TTS start/end 事件仍转发
+    send_silence_audio: bool = False
+    # join 后、唇 sync 就绪前 idle 静帧帧率（建议与 video.fps 一致以保持平滑）
+    video_prewarm_fps: int = 25
+    # true=按 fps 节拍推帧（Agora 网络推荐）；false=有帧即推
+    video_pace_enabled: bool = True
+    # 出站视频缓冲帧数（独立线程按 fps 匀速推 Agora，类似 aiortc track queue）；0=有帧即推
+    video_out_buffer_frames: int = 3
 
 
 @dataclass

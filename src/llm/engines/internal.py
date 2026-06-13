@@ -108,6 +108,7 @@ class InternalLLM(BaseLLM):
         user_message: str,
         lang: Optional[str] = None,
         client_session_id: Optional[str] = None,
+        timestamp: Optional[str] = None,
     ) -> dict[str, Any]:
         # Core expects envelope { "event": "...", "data": { ... } } (same shape as error responses).
         data: dict[str, Any] = {
@@ -115,6 +116,8 @@ class InternalLLM(BaseLLM):
             "message": user_message,
             "model": self.model,
         }
+        if timestamp and str(timestamp).strip():
+            data["timestamp"] = str(timestamp).strip()
         if lang and str(lang).strip():
             data["lang"] = str(lang).strip()
         if client_session_id and str(client_session_id).strip():
@@ -135,6 +138,7 @@ class InternalLLM(BaseLLM):
         user_message: str,
         lang: Optional[str] = None,
         client_session_id: Optional[str] = None,
+        timestamp: Optional[str] = None,
     ) -> AsyncIterator[str]:
         if not self.character_id or not str(self.character_id).strip():
             raise RuntimeError("internal LLM WebSocket requires llm.character_id (catalog id)")
@@ -157,7 +161,12 @@ class InternalLLM(BaseLLM):
             "yes" if self.api_key else "no",
         )
 
-        outgoing = self._build_outgoing_chat(user_message, lang=lang, client_session_id=client_session_id)
+        outgoing = self._build_outgoing_chat(
+            user_message,
+            lang=lang,
+            client_session_id=client_session_id,
+            timestamp=timestamp,
+        )
         host = urlparse(self.base_url).hostname or self.base_url
         for attempt in range(_LLM_CONNECT_RETRIES):
             sent = False
@@ -249,10 +258,13 @@ class InternalLLM(BaseLLM):
         messages: list[dict],
         lang: Optional[str] = None,
         client_session_id: Optional[str] = None,
+        timestamp: Optional[str] = None,
     ) -> str:
         payload = {"messages": messages, "model": self.model}
         if self.character_id:
             payload["character_id"] = self.character_id
+        if timestamp and str(timestamp).strip():
+            payload["timestamp"] = str(timestamp).strip()
         if lang and str(lang).strip():
             payload["lang"] = str(lang).strip()
         if client_session_id and str(client_session_id).strip():
@@ -324,11 +336,17 @@ class InternalLLM(BaseLLM):
         user_message: str,
         lang: Optional[str] = None,
         client_session_id: Optional[str] = None,
+        timestamp: Optional[str] = None,
     ) -> Generator[str, None, None]:
         """Bridge async WS stream to sync generator (llm runs in thread pool; no running loop)."""
 
         async def collect() -> AsyncIterator[str]:
-            async for chunk in self._ws_chat_chunks(user_message, lang=lang, client_session_id=client_session_id):
+            async for chunk in self._ws_chat_chunks(
+                user_message,
+                lang=lang,
+                client_session_id=client_session_id,
+                timestamp=timestamp,
+            ):
                 yield chunk
 
         loop = asyncio.new_event_loop()
@@ -357,6 +375,7 @@ class InternalLLM(BaseLLM):
         system_prompt: Optional[str] = None,
         lang: Optional[str] = None,
         session_id: Optional[str] = None,
+        timestamp: Optional[str] = None,
     ) -> Generator[str, None, None]:
         start_time = time.perf_counter()
         system_prompt = system_prompt or self.system_prompt
@@ -367,7 +386,9 @@ class InternalLLM(BaseLLM):
             messages = [{"role": "system", "content": system_prompt}]
             messages.extend(self.conversation_history)
             logger.info("Internal HTTP sending %d messages", len(messages))
-            reply = self._chat_once_http(messages, lang=lang, client_session_id=session_id)
+            reply = self._chat_once_http(
+                messages, lang=lang, client_session_id=session_id, timestamp=timestamp
+            )
             self.add_to_history("assistant", reply)
             logger.info("Internal HTTP response time: %.3fs", time.perf_counter() - start_time)
             yield reply
@@ -375,7 +396,9 @@ class InternalLLM(BaseLLM):
 
         # WebSocket: core owns multi-turn context via session_id; we only send the latest user line.
         pieces: list[str] = []
-        for chunk in self._run_ws_stream_sync(message, lang=lang, client_session_id=session_id):
+        for chunk in self._run_ws_stream_sync(
+            message, lang=lang, client_session_id=session_id, timestamp=timestamp
+        ):
             pieces.append(chunk)
             yield chunk
 

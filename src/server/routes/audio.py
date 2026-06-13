@@ -4,9 +4,11 @@ from aiohttp import web
 import asyncio
 import re
 
+from src.llm.env import resolve_llm_base_url_for_session
 from src.llm.service import llm_response
 from src.llm.transient_network import user_message_asr_http
 from src.utils.logging import logger
+from src.server.auth.session_access import check_session_access
 from src.server.state import state
 
 _ASR_PENDING_TEXT: dict[int, str] = {}
@@ -73,10 +75,26 @@ async def humanaudio(request):
     try:
         form = await request.post()
         sessionid = int(form.get('sessionid', 0))
+        access_token = form.get("access_token") or _extract_bearer_token(request.headers.get("Authorization"))
+        avatar_stream = state.avatar_streams.get(sessionid)
+        if avatar_stream is None:
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({"code": -1, "msg": f"sessionid {sessionid} not found"}),
+                status=404,
+            )
+        access_token = access_token or getattr(avatar_stream, "internal_access_token", None)
+        access_err = check_session_access(sessionid, access_token, action="humanaudio")
+        if access_err:
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({"code": -1, "msg": access_err}),
+                status=403,
+            )
         fileobj = form["file"]
         filename = fileobj.filename
         filebytes = fileobj.file.read()
-        state.avatar_streams[sessionid].put_audio_file(filebytes)
+        avatar_stream.put_audio_file(filebytes)
 
         return web.Response(
             content_type="application/json",
@@ -97,9 +115,31 @@ async def humanaudio(request):
 async def asr(request):
     """ASR 语音识别接口：将音频转换为文本，然后调用 LLM 进行对话"""
     try:
+        asr_cfg = state.config.asr if state.config else None
+        asr_mode = str(getattr(asr_cfg, "mode", "browser")).lower()
+        if asr_mode == "browser":
+            logger.warning("[ASR] POST /asr rejected: asr.mode=browser (use client-side ASR)")
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps(
+                    {"code": -1, "msg": "server ASR disabled (asr.mode=browser); use client speech recognition"}
+                ),
+                status=501,
+            )
+
         form = await request.post()
         sessionid = int(form.get('sessionid', 0))
         access_token = form.get("access_token") or _extract_bearer_token(request.headers.get("Authorization"))
+        avatar_stream = state.avatar_streams.get(sessionid)
+        if avatar_stream is not None:
+            access_token = access_token or getattr(avatar_stream, "internal_access_token", None)
+        access_err = check_session_access(sessionid, access_token, action="asr")
+        if access_err:
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({"code": -1, "msg": access_err}),
+                status=403,
+            )
         fileobj = form["file"]
         filebytes = fileobj.file.read()
         # Optional: client sends recognition language (e.g. zh-CN, en-US) so server uses it
@@ -201,6 +241,11 @@ async def asr(request):
                             status=404
                         )
 
+                    fallback_base_url = (
+                        llm_config.base_url
+                        if llm_config
+                        else "https://dashscope.aliyuncs.com/compatible-mode/v1"
+                    )
                     llm_text = await loop.run_in_executor(
                         None,
                         llm_response,
@@ -208,7 +253,7 @@ async def asr(request):
                         avatar_stream,
                         llm_config.provider if llm_config else "openai",
                         llm_config.api_key if llm_config else None,
-                        llm_config.base_url if llm_config else "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                        resolve_llm_base_url_for_session(None, avatar_stream, fallback_base_url),
                         llm_config.model if llm_config else "qwen-plus",
                         access_token,
                         llm_config.character_id if llm_config else None,
@@ -266,6 +311,11 @@ async def asr(request):
                     status=404
                 )
 
+            fallback_base_url = (
+                llm_config.base_url
+                if llm_config
+                else "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            )
             llm_text = await loop.run_in_executor(
                 None,
                 llm_response,
@@ -273,7 +323,7 @@ async def asr(request):
                 avatar_stream,
                 llm_config.provider if llm_config else "openai",
                 llm_config.api_key if llm_config else None,
-                llm_config.base_url if llm_config else "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                resolve_llm_base_url_for_session(None, avatar_stream, fallback_base_url),
                 llm_config.model if llm_config else "qwen-plus",
                 access_token,
                 llm_config.character_id if llm_config else None,

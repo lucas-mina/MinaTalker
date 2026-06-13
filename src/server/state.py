@@ -16,6 +16,8 @@ class ServerState:
 
         # Agora RTC sessions: sessionid -> (publisher, player)
         self.agora_sessions: Dict[int, Tuple[Any, Any]] = {}
+        # sessionid -> {"user_id": str|None, "avatar_id": str|None}
+        self.agora_session_meta: Dict[int, dict] = {}
         
         # 配置和模型
         self.config = None
@@ -46,10 +48,23 @@ class ServerState:
         """移除 WebRTC 连接"""
         self.pcs.discard(pc)
 
-    def add_agora_session(self, sessionid: int, publisher, player):
+    def add_agora_session(
+        self,
+        sessionid: int,
+        publisher,
+        player,
+        *,
+        user_id: str | None = None,
+        avatar_id: str | None = None,
+    ):
         self.agora_sessions[sessionid] = (publisher, player)
+        self.agora_session_meta[sessionid] = {
+            "user_id": user_id,
+            "avatar_id": avatar_id,
+        }
 
     def remove_agora_session(self, sessionid: int):
+        self.agora_session_meta.pop(sessionid, None)
         entry = self.agora_sessions.pop(sessionid, None)
         if entry:
             _publisher, player = entry

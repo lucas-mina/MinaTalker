@@ -70,6 +70,7 @@ class OpenAILLM(BaseLLM):
         system_prompt: Optional[str] = None,
         lang: Optional[str] = None,
         session_id: Optional[str] = None,
+        timestamp: Optional[str] = None,
     ) -> Generator[str, None, None]:
         start_time = time.perf_counter()
         system_prompt = system_prompt or self.system_prompt

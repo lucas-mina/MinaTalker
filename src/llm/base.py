@@ -99,6 +99,7 @@ class BaseLLM(ABC):
         system_prompt: Optional[str] = None,
         lang: Optional[str] = None,
         session_id: Optional[str] = None,
+        timestamp: Optional[str] = None,
     ) -> Generator[str, None, None]:
         """流式调用 LLM，子类必须实现"""
         raise NotImplementedError("子类必须实现 chat_stream 方法")
@@ -110,6 +111,7 @@ class BaseLLM(ABC):
         lang: Optional[str] = None,
         session_id: Optional[str] = None,
         voice_request_id: Optional[str] = None,
+        timestamp: Optional[str] = None,
     ) -> str:
         """生成完整响应并推送到 avatar"""
         start_time = time.perf_counter()
@@ -131,7 +133,9 @@ class BaseLLM(ABC):
                 target_avatar.voice_chat_turn_begin(voice_info["request_id"])
             # 记录首包延迟，方便定位 LLM 响应瓶颈
             first_chunk = True
-            for chunk in self.chat_stream(message, lang=lang, session_id=session_id):
+            for chunk in self.chat_stream(
+                message, lang=lang, session_id=session_id, timestamp=timestamp
+            ):
                 if first_chunk:
                     first_chunk_time = time.perf_counter()
                     logger.info(f"Time to first chunk: {first_chunk_time - start_time:.3f}s")
