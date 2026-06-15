@@ -12,17 +12,19 @@ import requests
 from src.tts.base import BaseTTS, State
 from src.utils.logging import logger
 
-_STREAM_URL = "https://api.inworld.ai/tts/v1/voice:stream"
+_DEFAULT_API_BASE = "https://api.inworld.ai"
 _DEFAULT_MODEL = "inworld-tts-2"
 
 
 class InworldTTS(BaseTTS):
-    """Inworld streaming TTS (REST voice:stream).
+    """Inworld streaming TTS (REST voice:stream) — minamina-app parity.
 
     Config fields used:
         tts.ref_file         – Inworld voice ID (required)
         tts.inworld_api_key  – Inworld API key (or inworld_api_key env)
+        tts.inworld_base_url – API host, default https://api.inworld.ai
         tts.model            – model id, default inworld-tts-2
+        tts.delivery_mode    – STABLE | BALANCED | CREATIVE (default BALANCED)
     """
 
     def __init__(self, config, parent):
@@ -39,10 +41,16 @@ class InworldTTS(BaseTTS):
         self._api_key = api_key
         self._model_id: str = (getattr(config.tts, "model", None) or _DEFAULT_MODEL).strip() or _DEFAULT_MODEL
         self._delivery_mode: str = (getattr(config.tts, "delivery_mode", None) or "BALANCED").strip()
+        api_base = (
+            (getattr(config.tts, "inworld_base_url", None) or "")
+            or os.getenv("INWORLD_API_BASE", "")
+            or _DEFAULT_API_BASE
+        ).rstrip("/")
+        self._stream_url = f"{api_base}/tts/v1/voice:stream"
 
     def _stream_audio(self, text: str) -> Iterator[bytes]:
         payload = {
-            "text": text,
+            "text": text.strip(),
             "voiceId": self.voice_id,
             "modelId": self._model_id,
             "audioConfig": {
@@ -54,12 +62,13 @@ class InworldTTS(BaseTTS):
         headers = {
             "Authorization": f"Basic {self._api_key}",
             "Content-Type": "application/json",
+            "Accept": "application/json",
         }
         start = time.perf_counter()
         first = True
         try:
             with requests.post(
-                _STREAM_URL,
+                self._stream_url,
                 json=payload,
                 headers=headers,
                 stream=True,
@@ -84,9 +93,14 @@ class InworldTTS(BaseTTS):
                     except json.JSONDecodeError:
                         logger.warning("inworld: skip non-JSON stream line")
                         continue
-                    if message.get("error"):
-                        logger.error("inworld stream error: %s", message["error"])
-                        continue
+                    err = message.get("error")
+                    if err:
+                        if isinstance(err, dict):
+                            msg = err.get("message") or str(err)
+                        else:
+                            msg = str(err)
+                        logger.error("inworld stream error: %s", msg)
+                        raise RuntimeError(f"Inworld TTS stream error: {msg}")
                     result = message.get("result") or {}
                     audio_b64 = result.get("audioContent")
                     if not audio_b64:
@@ -107,6 +121,8 @@ class InworldTTS(BaseTTS):
                         )
                         first = False
                     yield chunk
+        except RuntimeError:
+            raise
         except Exception:
             logger.exception("inworld _stream_audio error")
 

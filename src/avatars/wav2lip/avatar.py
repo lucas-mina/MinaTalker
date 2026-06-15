@@ -208,7 +208,7 @@ class Wav2LipAvatar(BaseAvatar):
         
         self.batch_size = config.model.batch_size
         self.idx = 0
-        self.res_frame_queue = Queue(self.batch_size*2)  #mp.Queue
+        self.res_frame_queue = Queue(max(24, self.batch_size * 6))
         #self.__loadavatar()
         self.model = model
         frames, faces, coords = avatar
@@ -322,24 +322,33 @@ class Wav2LipAvatar(BaseAvatar):
                 logger.debug('sleep qsize=%d',video_track._queue.qsize())
                 time.sleep(0.04*video_track._queue.qsize()*0.8)
             elif media_sink is not None:
-                v_backlog = getattr(media_sink, "outbound_video_backlog", 0)
-                buf_cap = getattr(media_sink, "video_out_buffer_capacity", 3)
-                if v_backlog >= max(1, buf_cap - 1):
-                    logger.debug(
-                        'Agora outbound video backlog=%d cap=%d', v_backlog, buf_cap
-                    )
-                    time.sleep(min(0.12, 0.04 * v_backlog * 0.8))
-                elif self.res_frame_queue.qsize() >= self.batch_size:
-                    backlog = self.res_frame_queue.qsize()
-                    logger.debug('Agora render backlog qsize=%d', backlog)
-                    # Cap sleep so lip-sync does not fall multiple seconds behind when inference runs ahead.
-                    time.sleep(min(0.12, 0.04 * backlog * 0.5))
+                streaming = bool(getattr(media_sink, "is_streaming_active", False))
+                if streaming:
+                    q = self.res_frame_queue.qsize()
+                    if q > self.batch_size:
+                        time.sleep(min(0.2, 0.04 * q * 0.6))
+                    else:
+                        step_interval = (self.batch_size * 2) / self.config.audio.fps
+                        elapsed = time.perf_counter() - t
+                        if elapsed < step_interval:
+                            time.sleep(step_interval - elapsed)
                 else:
-                    # Pace to real-time audio clock; otherwise idle silent frames outrun video.fps (~2x).
-                    step_interval = (self.batch_size * 2) / self.config.audio.fps
-                    elapsed = time.perf_counter() - t
-                    if elapsed < step_interval:
-                        time.sleep(step_interval - elapsed)
+                    v_backlog = getattr(media_sink, "outbound_video_backlog", 0)
+                    buf_cap = getattr(media_sink, "video_out_buffer_capacity", 3)
+                    if v_backlog >= max(1, buf_cap - 1):
+                        logger.debug(
+                            'Agora outbound video backlog=%d cap=%d', v_backlog, buf_cap
+                        )
+                        time.sleep(min(0.12, 0.04 * v_backlog * 0.8))
+                    elif self.res_frame_queue.qsize() >= self.batch_size:
+                        backlog = self.res_frame_queue.qsize()
+                        logger.debug('Agora render backlog qsize=%d', backlog)
+                        time.sleep(min(0.12, 0.04 * backlog * 0.5))
+                    else:
+                        step_interval = (self.batch_size * 2) / self.config.audio.fps
+                        elapsed = time.perf_counter() - t
+                        if elapsed < step_interval:
+                            time.sleep(step_interval - elapsed)
                 
             # delay = _starttime+_totalframe*0.04-time.perf_counter() #40ms
             # if delay > 0:

@@ -39,6 +39,10 @@ _ENGINE_MAP: dict[str, Type[BaseTTS]] = {
 }
 
 
+def known_tts_types() -> set[str]:
+    return set(_ENGINE_MAP.keys())
+
+
 def create_tts_engine(tts_type: str, config, parent) -> BaseTTS:
     """
     根据类型创建 TTS 引擎

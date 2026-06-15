@@ -6,6 +6,10 @@ from copy import deepcopy
 
 from src.avatars.factory import create_avatar
 from src.config.loader import find_avatar_entry_by_catalog_id, load_avatar_entries
+from src.services.character_interaction_config import (
+    apply_character_interaction_voice,
+    fetch_character_interaction_voice,
+)
 from src.server.state import state
 from src.utils.logging import logger
 
@@ -102,6 +106,31 @@ async def create_avatar_for_session(
 
         except Exception as e:
             logger.warning("Failed to resolve avatar config for avatar_id=%s: %s", avatar_id, e)
+
+    character_id = (session_config.llm.character_id or "").strip()
+    avatar_api_base = (session_config.llm.base_url or "").strip()
+    if character_id and avatar_api_base:
+        try:
+            voice = await fetch_character_interaction_voice(
+                avatar_api_base,
+                character_id,
+                access_token=access_token,
+            )
+            if voice and apply_character_interaction_voice(session_config, voice):
+                logger.info(
+                    "Applied interaction-config voice for character_id=%s",
+                    character_id,
+                )
+        except Exception:
+            logger.exception(
+                "Failed to apply interaction-config voice for character_id=%s",
+                character_id,
+            )
+    elif character_id and not avatar_api_base:
+        logger.warning(
+            "llm.base_url empty; skip interaction-config for character_id=%s",
+            character_id,
+        )
 
     avatar_stream = await asyncio.get_event_loop().run_in_executor(
         None,

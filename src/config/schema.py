@@ -62,7 +62,11 @@ class AgoraConfig:
     # true=按 fps 节拍推帧（Agora 网络推荐）；false=有帧即推
     video_pace_enabled: bool = True
     # 出站视频缓冲帧数（独立线程按 fps 匀速推 Agora，类似 aiortc track queue）；0=有帧即推
-    video_out_buffer_frames: int = 3
+    video_out_buffer_frames: int = 8
+    lip_sync_audio_delay_ms: int = 0  # deprecated; paired queue keeps A/V in sync
+    # Lip-sync: drop queued frames only when AV out thread is behind >= N ticks (at video.fps).
+    lip_sync_drop_behind_ticks: int = 3
+    lipsync_prewarm_ticks: int = 0  # silent pipeline warmup after join; 0=off
 
 
 @dataclass
@@ -234,14 +238,18 @@ class TTSConfig:
     # Supports ${ENV_VAR} substitution via the config loader.
     api_key: Optional[str] = None
     inworld_api_key: Optional[str] = None  # Inworld TTS only; supports ${inworld_api_key}
+    inworld_base_url: Optional[str] = None  # API host; default https://api.inworld.ai
     minimax_api_key: Optional[str] = None  # MiniMax TTS only; supports ${MINIMAX_API_KEY}
+    minimax_transport: str = "websocket"  # websocket | http
+    minimax_base_url: Optional[str] = None  # API host; WS URL derived when transport=websocket
     language_boost: str = "auto"  # MiniMax only; e.g. Chinese,Yue
 
-    # ElevenLabs voice settings
-    similarity_boost: float = 0.75
-    style: float = 0.0
-    use_speaker_boost: bool = True
-    speed: float = 1.0
+    # ElevenLabs voice settings (set from interaction-config API per session; omit in yaml)
+    stability: Optional[float] = None
+    similarity_boost: Optional[float] = None
+    style: Optional[float] = None
+    use_speaker_boost: Optional[bool] = None
+    speed: Optional[float] = None
 
 
 @dataclass
@@ -282,6 +290,9 @@ class LLMConfig:
     # internal provider only:
     internal_transport: str = "websocket"  # websocket | http — core streaming vs legacy POST /api/agent/chat
     internal_ws_path: str = "/ws/chat"  # path on same host as base_url (origin)
+    stream_sentence_only: bool = False  # buffer LLM tokens until sentence end before TTS
+    stream_min_chars: int = 0
+    stream_max_buffer_chars: int = 0
 
 
 @dataclass

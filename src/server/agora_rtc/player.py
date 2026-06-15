@@ -11,6 +11,7 @@ from src.utils.logging import logger
 
 def _agora_worker(quit_event, loop, container, publisher: AgoraRTCPublisher, player: "AgoraHumanPlayer"):
     publisher.attach_notify(player.notify)
+    container._media_sink = publisher
     try:
         container.render(quit_event, loop, None, None, media_sink=publisher)
     except Exception:

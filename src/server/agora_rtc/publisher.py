@@ -49,6 +49,14 @@ class _AudioOutItem:
     audio_type: int
 
 
+@dataclass(frozen=True, slots=True)
+class _AvOutTick:
+    """One outbound 25fps tick: video frame + paired 20ms PCM chunk(s)."""
+
+    video: np.ndarray
+    audio_items: tuple[_AudioOutItem, ...]
+
+
 class _PublisherConnectionObserver:
     """Wait for Agora connect() to finish before publish_audio/publish_video."""
 
@@ -338,25 +346,25 @@ class AgoraRTCPublisher:
         prewarm = int(getattr(agora, "video_prewarm_fps", 5) or 0)
         self._prewarm_fps = max(0, prewarm)
         self._streaming_active = False
+        self._lip_sync_paired = False
         self._prewarm_stop: threading.Event | None = None
         self._prewarm_thread: threading.Thread | None = None
         out_buf = int(getattr(agora, "video_out_buffer_frames", 3) or 0)
         self._video_out_buffer_frames = max(0, out_buf)
-        self._video_out_queue: queue.Queue | None = (
+        self._lip_sync_drop_behind_ticks = max(
+            1, int(getattr(agora, "lip_sync_drop_behind_ticks", 2) or 2)
+        )
+        self._av_out_queue: queue.Queue[_AvOutTick] | None = (
             queue.Queue(maxsize=self._video_out_buffer_frames)
             if self._video_out_buffer_frames > 0
             else None
         )
-        self._audio_out_queue: queue.Queue | None = None
-        if self._video_out_queue is not None:
-            audio_per_video = max(1, self._audio_fps // max(1, self._fps))
-            audio_buf = max(4, (self._video_out_buffer_frames + 2) * audio_per_video)
-            self._audio_out_queue = queue.Queue(maxsize=audio_buf)
         self._video_out_stop: threading.Event | None = None
         self._video_out_thread: threading.Thread | None = None
+        self._av_out_resync = threading.Event()
+        self._av_sync_lock = threading.Lock()
         self._last_video_frame: np.ndarray | None = None
-        self._video_out_dropped = 0
-        self._audio_out_dropped = 0
+        self._av_out_dropped = 0
         self._video_codec = normalize_video_codec(getattr(agora, "video_codec", None))
         self._client_video_codec = effective_publish_codec(
             self._video_codec,
@@ -397,15 +405,13 @@ class AgoraRTCPublisher:
 
     @property
     def outbound_video_backlog(self) -> int:
-        if self._video_out_queue is None:
+        if self._av_out_queue is None:
             return 0
-        return self._video_out_queue.qsize()
+        return self._av_out_queue.qsize()
 
     @property
     def outbound_audio_backlog(self) -> int:
-        if self._audio_out_queue is None:
-            return 0
-        return self._audio_out_queue.qsize()
+        return self.outbound_video_backlog * self._audio_chunks_per_video_frame()
 
     @property
     def video_out_buffer_capacity(self) -> int:
@@ -426,11 +432,61 @@ class AgoraRTCPublisher:
         if self._notify_cb and eventpoint:
             self._notify_cb(eventpoint)
 
+    @property
+    def is_streaming_active(self) -> bool:
+        return self._streaming_active
+
+    def _flush_av_out_queues(self) -> None:
+        if self._av_out_queue is not None:
+            while True:
+                try:
+                    self._av_out_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+    def _request_av_out_clock_resync(self) -> None:
+        self._av_out_resync.set()
+
+    def _uses_gap_silence_audio(self) -> bool:
+        return False
+
+    def _should_send_silence_audio(self, audio_type: int) -> bool:
+        if audio_type != 1:
+            return True
+        # During lip-sync streaming keep silent PCM paired with every video tick.
+        return bool(self._send_silence_audio or self._streaming_active)
+
+    def on_speech_start(self) -> None:
+        """First lip-sync frame of a segment; stay in paired streaming mode."""
+        with self._av_sync_lock:
+            self._lip_sync_paired = True
+            if not self._streaming_active:
+                self._mark_streaming_active_unlocked()
+
+    def on_speech_end(self) -> None:
+        """Inter-sentence pause: keep paired A/V streaming (no mode switch)."""
+        pass
+
+    def on_speech_interrupted(self) -> None:
+        """Drop queued outbound A/V after interrupt/flush_talk."""
+        if not self._streaming_active:
+            return
+        with self._av_sync_lock:
+            self._lip_sync_paired = False
+            self._flush_av_out_queues()
+            self._request_av_out_clock_resync()
+        logger.info("Agora lip-sync interrupt resync channel=%s", self._channel)
+
     def mark_streaming_active(self) -> None:
         """Lip-sync pipeline producing frames; switch from prewarm to full fps pacing."""
+        with self._av_sync_lock:
+            self._mark_streaming_active_unlocked()
+
+    def _mark_streaming_active_unlocked(self) -> None:
         if self._streaming_active:
             return
         self._streaming_active = True
+        self._lip_sync_paired = True
         self._video_start = None
         self._video_frame_count = 0
         self._audio_start = None
@@ -438,18 +494,8 @@ class AgoraRTCPublisher:
         self._last_video_frame = None
         if self._prewarm_stop is not None:
             self._prewarm_stop.set()
-        if self._video_out_queue is not None:
-            while True:
-                try:
-                    self._video_out_queue.get_nowait()
-                except queue.Empty:
-                    break
-        if self._audio_out_queue is not None:
-            while True:
-                try:
-                    self._audio_out_queue.get_nowait()
-                except queue.Empty:
-                    break
+        self._flush_av_out_queues()
+        self._request_av_out_clock_resync()
         logger.info(
             "Agora video pacing prewarm@%dfps -> %dfps channel=%s",
             self._prewarm_fps or self._fps,
@@ -511,10 +557,18 @@ class AgoraRTCPublisher:
                 self._prewarm_fps,
             )
             while not stop.is_set() and not self._closed and not self._streaming_active:
+                if self._av_out_queue is not None:
+                    while (
+                        self._av_out_queue.qsize() >= self._video_out_buffer_frames
+                        and not stop.is_set()
+                        and not self._closed
+                        and not self._streaming_active
+                    ):
+                        stop.wait(0.01)
                 frame = cycle[_mirror_index(length, idx)]
                 idx += 1
                 self.push_video(frame, paced=True)
-                if self._video_out_queue is not None or not self._pace_enabled:
+                if self._av_out_queue is not None or not self._pace_enabled:
                     if stop.wait(interval):
                         break
             logger.info("Agora idle prewarm stopped channel=%s", self._channel)
@@ -720,7 +774,7 @@ class AgoraRTCPublisher:
         )
 
     def _start_video_out_thread(self) -> None:
-        if self._video_out_queue is None or self._video_out_thread is not None:
+        if self._av_out_queue is None or self._video_out_thread is not None:
             return
         stop = threading.Event()
         self._video_out_stop = stop
@@ -728,13 +782,16 @@ class AgoraRTCPublisher:
         def _loop() -> None:
             next_tick = time.perf_counter()
             logger.info(
-                "Agora AV out thread started channel=%s video_buf=%d @%dfps audio=%d/video_tick",
+                "Agora AV out thread started channel=%s av_buf_ticks=%d @%dfps audio=%d/tick",
                 self._channel,
                 self._video_out_buffer_frames,
                 self._fps,
                 self._audio_chunks_per_video_frame(),
             )
             while not stop.is_set():
+                if self._av_out_resync.is_set():
+                    self._av_out_resync.clear()
+                    next_tick = time.perf_counter()
                 fps = self._video_out_fps()
                 interval = 1.0 / fps
                 now = time.perf_counter()
@@ -743,20 +800,9 @@ class AgoraRTCPublisher:
                         break
                     now = time.perf_counter()
 
-                # Never burst-send to catch up; drop stale queue and resync the clock.
-                if now - next_tick >= interval:
-                    keep = 1 if self._streaming_active else 0
-                    dropped = self._drop_stale_video_queue_frames(max_keep=keep)
-                    if dropped:
-                        audio_dropped = self._drop_paired_audio_for_video_frames(dropped)
-                        logger.warning(
-                            "Agora AV out behind schedule; dropped video=%d audio=%d "
-                            "channel=%s streaming=%s",
-                            dropped,
-                            audio_dropped,
-                            self._channel,
-                            self._streaming_active,
-                        )
+                behind = now - next_tick
+                if behind >= interval:
+                    # Never drop queued A/V during streaming — catch up clock only (delay OK).
                     next_tick = now
 
                 with self._lock:
@@ -767,19 +813,14 @@ class AgoraRTCPublisher:
                         continue
                     if self._closed or self._connection is not conn:
                         continue
-                    if self._streaming_active:
-                        self._send_streaming_av_tick(conn, fps)
-                    else:
-                        frame = self._dequeue_video_for_send()
-                        if frame is not None:
-                            self._send_video_frame(conn, frame)
-                        self._send_audio_chunks_for_video_tick(conn, fps)
+                    allow_hold = not self._streaming_active
+                    self._send_av_out_tick(conn, allow_hold=allow_hold)
 
                 next_tick += interval
-            dropped = self._video_out_dropped
+            dropped = self._av_out_dropped
             if dropped:
                 logger.warning(
-                    "Agora video out thread stopped channel=%s (dropped_frames=%d)",
+                    "Agora video out thread stopped channel=%s (dropped_ticks=%d)",
                     self._channel,
                     dropped,
                 )
@@ -800,230 +841,78 @@ class AgoraRTCPublisher:
             self._video_out_thread.join(timeout=2.0)
             self._video_out_thread = None
         self._video_out_stop = None
-        if self._video_out_queue is not None:
-            while True:
-                try:
-                    self._video_out_queue.get_nowait()
-                except queue.Empty:
-                    break
-        if self._audio_out_queue is not None:
-            while True:
-                try:
-                    self._audio_out_queue.get_nowait()
-                except queue.Empty:
-                    break
+        self._flush_av_out_queues()
 
-    def _enqueue_video_frame(self, bgr_frame: np.ndarray) -> None:
-        assert self._video_out_queue is not None
-        item = bgr_frame.copy()
+    def _log_av_out_drop(self, reason: str) -> None:
+        if self._av_out_dropped in (1, 10) or self._av_out_dropped % 100 == 0:
+            qsize = self._av_out_queue.qsize() if self._av_out_queue is not None else -1
+            logger.warning(
+                "Agora AV out queue %s channel=%s qsize=%d total_dropped=%d",
+                reason,
+                self._channel,
+                qsize,
+                self._av_out_dropped,
+            )
+
+    def _enqueue_av_tick(self, tick: _AvOutTick) -> None:
+        assert self._av_out_queue is not None
         if self._streaming_active:
-            deadline = time.perf_counter() + 2.0
             while not self._closed:
                 try:
-                    self._video_out_queue.put(item, block=True, timeout=0.05)
+                    self._av_out_queue.put(tick, block=True, timeout=0.1)
                     return
                 except queue.Full:
-                    if time.perf_counter() >= deadline:
-                        self._video_out_dropped += 1
-                        logger.warning(
-                            "Agora video out queue backpressure timeout; dropped frame "
-                            "channel=%s qsize=%d total_dropped=%d",
-                            self._channel,
-                            self._video_out_queue.qsize(),
-                            self._video_out_dropped,
-                        )
-                        return
+                    continue
             return
-        try:
-            self._video_out_queue.put_nowait(item)
-        except queue.Full:
+        deadline = time.perf_counter() + 1.0
+        while not self._closed:
             try:
-                self._video_out_queue.get_nowait()
-                self._video_out_dropped += 1
-                if self._video_out_dropped in (1, 10) or self._video_out_dropped % 100 == 0:
-                    logger.warning(
-                        "Agora video out queue full; dropped oldest idle frame channel=%s total_dropped=%d",
-                        self._channel,
-                        self._video_out_dropped,
-                    )
-            except queue.Empty:
-                logger.warning(
-                    "Agora video out queue full but empty on drop channel=%s",
-                    self._channel,
-                )
-            try:
-                self._video_out_queue.put_nowait(item)
+                self._av_out_queue.put_nowait(tick)
+                return
             except queue.Full:
-                logger.warning(
-                    "Agora video out queue still full after drop channel=%s",
-                    self._channel,
-                )
-
-    def _drop_stale_video_queue_frames(self, *, max_keep: int = 0) -> int:
-        """Drop queued frames when the out thread fell behind (avoid burst playback)."""
-        assert self._video_out_queue is not None
-        q = self._video_out_queue
-        dropped = 0
-        while q.qsize() > max(0, max_keep):
+                pass
+            if time.perf_counter() < deadline:
+                time.sleep(0.005)
+                continue
             try:
-                q.get_nowait()
-                dropped += 1
+                self._av_out_queue.get_nowait()
+                self._av_out_dropped += 1
+                self._log_av_out_drop("idle full; dropped oldest tick")
             except queue.Empty:
-                break
-        if dropped:
-            self._video_out_dropped += dropped
-        return dropped
-
-    def _drop_paired_audio_for_video_frames(self, video_frames: int) -> int:
-        if video_frames <= 0 or self._audio_out_queue is None:
-            return 0
-        return self._drop_stale_audio_queue_frames(
-            video_frames * self._audio_chunks_per_video_frame()
-        )
-
-    def _dequeue_video_for_send(self) -> np.ndarray | None:
-        assert self._video_out_queue is not None
-        q = self._video_out_queue
-        max_lag = self._video_out_buffer_frames + 2
-        while q.qsize() > max_lag:
+                self._av_out_dropped += 1
+                self._log_av_out_drop("idle full but empty; dropped incoming tick")
+                return
             try:
-                q.get_nowait()
-                self._video_out_dropped += 1
-                if self._streaming_active:
-                    self._drop_paired_audio_for_video_frames(1)
-            except queue.Empty:
-                break
-        frame = None
+                self._av_out_queue.put_nowait(tick)
+                return
+            except queue.Full:
+                self._av_out_dropped += 1
+                self._log_av_out_drop("idle still full; dropped incoming tick")
+                return
+
+    def _dequeue_av_tick(self, *, allow_hold: bool) -> _AvOutTick | None:
+        if self._av_out_queue is None:
+            return None
         try:
-            frame = q.get_nowait()
+            tick = self._av_out_queue.get_nowait()
+            self._last_video_frame = tick.video
+            return tick
         except queue.Empty:
             pass
-        if frame is not None:
-            self._last_video_frame = frame
-            return frame
-        if self._streaming_active:
-            return None
-        return self._last_video_frame
+        if allow_hold and self._last_video_frame is not None:
+            return _AvOutTick(video=self._last_video_frame, audio_items=())
+        return None
 
-    def _send_streaming_av_tick(self, conn, video_fps: int) -> None:
-        """Send one lip-sync video frame and its paired audio chunks (no stale video hold)."""
-        frame = self._dequeue_video_for_send()
-        if frame is None:
-            if self._audio_out_queue is not None:
-                pending = self._audio_out_queue.qsize()
-                if pending:
-                    dropped = self._drop_stale_audio_queue_frames(pending)
-                    logger.warning(
-                        "Agora lip-sync stall: no fresh video frame; dropped %d orphaned "
-                        "audio chunk(s) channel=%s",
-                        dropped,
-                        self._channel,
-                    )
+    def _send_av_out_tick(self, conn, *, allow_hold: bool) -> None:
+        tick = self._dequeue_av_tick(allow_hold=allow_hold)
+        if tick is None:
             return
-        chunks = max(1, self._audio_fps // max(1, video_fps))
-        audio_items = self._dequeue_audio_chunks_for_send(chunks)
-        if len(audio_items) < chunks:
-            logger.warning(
-                "Agora lip-sync skew: got %d/%d audio chunk(s) for video frame channel=%s",
-                len(audio_items),
-                chunks,
-                self._channel,
-            )
-        self._send_video_frame(conn, frame)
-        for item in audio_items:
-            self._send_audio_item(conn, item)
-
-    def _enqueue_audio_item(self, item: _AudioOutItem) -> None:
-        assert self._audio_out_queue is not None
-        if self._streaming_active:
-            deadline = time.perf_counter() + 2.0
-            while not self._closed:
-                try:
-                    self._audio_out_queue.put(item, block=True, timeout=0.05)
-                    return
-                except queue.Full:
-                    if time.perf_counter() >= deadline:
-                        self._audio_out_dropped += 1
-                        logger.warning(
-                            "Agora audio out queue backpressure timeout; dropped chunk "
-                            "channel=%s qsize=%d total_dropped=%d",
-                            self._channel,
-                            self._audio_out_queue.qsize(),
-                            self._audio_out_dropped,
-                        )
-                        return
-            return
-        try:
-            self._audio_out_queue.put_nowait(item)
-        except queue.Full:
-            try:
-                self._audio_out_queue.get_nowait()
-                self._audio_out_dropped += 1
-                if self._audio_out_dropped in (1, 10) or self._audio_out_dropped % 100 == 0:
-                    logger.warning(
-                        "Agora audio out queue full; dropped oldest idle chunk channel=%s total_dropped=%d",
-                        self._channel,
-                        self._audio_out_dropped,
-                    )
-            except queue.Empty:
-                logger.warning(
-                    "Agora audio out queue full but empty on drop channel=%s",
-                    self._channel,
-                )
-            try:
-                self._audio_out_queue.put_nowait(item)
-            except queue.Full:
-                logger.warning(
-                    "Agora audio out queue still full after drop channel=%s",
-                    self._channel,
-                )
-
-    def _drop_stale_audio_queue_frames(self, count: int) -> int:
-        if self._audio_out_queue is None or count <= 0:
-            return 0
-        dropped = 0
-        for _ in range(count):
-            try:
-                self._audio_out_queue.get_nowait()
-                dropped += 1
-                self._audio_out_dropped += 1
-            except queue.Empty:
-                break
-        return dropped
-
-    def _dequeue_audio_chunks_for_send(self, count: int) -> list[_AudioOutItem]:
-        assert self._audio_out_queue is not None
-        q = self._audio_out_queue
-        max_lag = (self._video_out_buffer_frames + 2) * self._audio_chunks_per_video_frame()
-        while q.qsize() > max_lag:
-            try:
-                q.get_nowait()
-                self._audio_out_dropped += 1
-                if self._streaming_active and self._audio_out_dropped in (1, 10, 100):
-                    logger.warning(
-                        "Agora audio queue overflow trim during lip-sync channel=%s qsize=%d",
-                        self._channel,
-                        q.qsize(),
-                    )
-            except queue.Empty:
-                break
-        items: list[_AudioOutItem] = []
-        for _ in range(count):
-            try:
-                items.append(q.get_nowait())
-            except queue.Empty:
-                break
-        return items
-
-    def _send_audio_chunks_for_video_tick(self, conn, video_fps: int) -> None:
-        if self._audio_out_queue is None:
-            return
-        chunks = max(1, self._audio_fps // max(1, video_fps))
-        for item in self._dequeue_audio_chunks_for_send(chunks):
+        self._send_video_frame(conn, tick.video)
+        for item in tick.audio_items:
             self._send_audio_item(conn, item)
 
     def _send_audio_item(self, conn, item: _AudioOutItem) -> int:
-        if item.audio_type == 1 and not self._send_silence_audio:
+        if not self._should_send_silence_audio(item.audio_type):
             return 0
         pcm_int16 = item.pcm
         if pcm_int16 is None or pcm_int16.size == 0:
@@ -1056,7 +945,7 @@ class AgoraRTCPublisher:
 
     def _video_pace_wait_sec(self) -> float:
         """Seconds to sleep before next video frame (0 = send now / catch up)."""
-        if self._video_out_queue is not None:
+        if self._av_out_queue is not None:
             return 0.0
         if not self._pace_enabled:
             return 0.0
@@ -1075,7 +964,7 @@ class AgoraRTCPublisher:
             return max(0.0, self._video_start + self._video_frame_count * interval - now)
 
     def _audio_pace_wait_sec(self) -> float:
-        if self._audio_out_queue is not None:
+        if self._av_out_queue is not None:
             return 0.0
         with self._pace_lock:
             now = time.perf_counter()
@@ -1145,12 +1034,52 @@ class AgoraRTCPublisher:
             )
         return 0
 
+    def push_av_pair(
+        self,
+        bgr_frame: np.ndarray,
+        audio_frames: list[tuple[np.ndarray, dict | None, int]],
+    ) -> None:
+        """Enqueue one atomic lip-sync tick (video + paired 20ms PCM chunk(s))."""
+        if bgr_frame is None or bgr_frame.size == 0:
+            logger.warning("Agora push_av_pair skipped empty video")
+            return
+        audio_items: list[_AudioOutItem] = []
+        for pcm_int16, eventpoint, audio_type in audio_frames:
+            if not self._should_send_silence_audio(audio_type):
+                continue
+            if pcm_int16 is None or pcm_int16.size == 0:
+                continue
+            audio_items.append(
+                _AudioOutItem(
+                    pcm=pcm_int16.copy(),
+                    eventpoint=eventpoint,
+                    audio_type=audio_type,
+                )
+            )
+        tick = _AvOutTick(video=bgr_frame.copy(), audio_items=tuple(audio_items))
+        if self._av_out_queue is not None:
+            self._enqueue_av_tick(tick)
+            return
+        with self._lock:
+            if self._closed or not self._started:
+                return
+            conn = self._connection
+            if conn is None:
+                return
+            if self._closed or self._connection is not conn:
+                return
+            self._send_video_frame(conn, tick.video)
+            for item in tick.audio_items:
+                self._send_audio_item(conn, item)
+
     def push_video(self, bgr_frame: np.ndarray, *, paced: bool = True):
         if bgr_frame is None or bgr_frame.size == 0:
             logger.warning("Agora push_video skipped empty frame")
             return
-        if self._video_out_queue is not None:
-            self._enqueue_video_frame(bgr_frame)
+        if self._av_out_queue is not None:
+            self._enqueue_av_tick(
+                _AvOutTick(video=bgr_frame.copy(), audio_items=())
+            )
             return
         if paced:
             wait = self._video_pace_wait_sec()
@@ -1176,17 +1105,15 @@ class AgoraRTCPublisher:
         audio_type: int = 0,
     ):
         # audio_type 1 = pipeline idle silence (zeros); 0 = speech; >1 = custom audio
-        if audio_type == 1 and not self._send_silence_audio:
+        if not self._should_send_silence_audio(audio_type):
             return
         if pcm_int16 is None or pcm_int16.size == 0:
             return
-        if self._audio_out_queue is not None:
-            self._enqueue_audio_item(
-                _AudioOutItem(
-                    pcm=pcm_int16.copy(),
-                    eventpoint=eventpoint,
-                    audio_type=audio_type,
-                )
+        if self._av_out_queue is not None:
+            logger.warning(
+                "Agora push_audio without push_av_pair while buffered; "
+                "dropping orphan audio chunk channel=%s",
+                self._channel,
             )
             return
         if eventpoint:

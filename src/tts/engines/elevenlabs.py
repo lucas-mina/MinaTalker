@@ -20,6 +20,8 @@ class ElevenLabsTTS(BaseTTS):
     Config fields used:
         tts.ref_file   – ElevenLabs voice ID (required)
         tts.api_key    – ElevenLabs API key (supports ${ENV_VAR} substitution)
+        tts.model      – model id (optional; default eleven_v3)
+        tts.stability / similarity_boost / speed – optional; set from interaction-config API
 
     Example config.yaml snippet:
         tts:
@@ -44,28 +46,45 @@ class ElevenLabsTTS(BaseTTS):
         self._client = ElevenLabs(api_key=api_key)
         model = (getattr(config.tts, "model", None) or _DEFAULT_MODEL_ID).strip()
         self._model_id = model or _DEFAULT_MODEL_ID
-        self._similarity_boost: float = getattr(config.tts, "similarity_boost", 0.75)
-        self._style: float = getattr(config.tts, "style", 0.0)
-        self._use_speaker_boost: bool = getattr(config.tts, "use_speaker_boost", True)
-        self._speed: float = getattr(config.tts, "speed", 1.0)
+
+    def _voice_settings(self) -> VoiceSettings | None:
+        """Only pass settings explicitly set (e.g. from interaction-config API)."""
+        tts = self.config.tts
+        kwargs: dict = {}
+        stability = getattr(tts, "stability", None)
+        if stability is not None:
+            kwargs["stability"] = float(stability)
+        similarity = getattr(tts, "similarity_boost", None)
+        if similarity is not None:
+            kwargs["similarity_boost"] = float(similarity)
+        style = getattr(tts, "style", None)
+        if style is not None:
+            kwargs["style"] = float(style)
+        use_speaker_boost = getattr(tts, "use_speaker_boost", None)
+        if use_speaker_boost is not None:
+            kwargs["use_speaker_boost"] = bool(use_speaker_boost)
+        speed = getattr(tts, "speed", None)
+        if speed is not None:
+            kwargs["speed"] = float(speed)
+        if not kwargs:
+            return None
+        return VoiceSettings(**kwargs)
 
     def _stream_audio(self, text: str) -> Iterator[bytes]:
         """Call ElevenLabs SDK streaming TTS and yield raw PCM chunks."""
         start = time.perf_counter()
         first = True
         try:
-            audio_stream = self._client.text_to_speech.stream(
-                voice_id=self.voice_id,
-                text=text,
-                model_id=self._model_id,
-                output_format=_OUTPUT_FORMAT,
-                voice_settings=VoiceSettings(
-                    similarity_boost=self._similarity_boost,
-                    style=self._style,
-                    use_speaker_boost=self._use_speaker_boost,
-                    speed=self._speed,
-                ),
-            )
+            stream_kwargs: dict = {
+                "voice_id": self.voice_id,
+                "text": text,
+                "model_id": self._model_id,
+                "output_format": _OUTPUT_FORMAT,
+            }
+            voice_settings = self._voice_settings()
+            if voice_settings is not None:
+                stream_kwargs["voice_settings"] = voice_settings
+            audio_stream = self._client.text_to_speech.stream(**stream_kwargs)
             for chunk in audio_stream:
                 if not chunk:
                     continue

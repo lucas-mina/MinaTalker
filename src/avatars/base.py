@@ -93,7 +93,12 @@ class BaseAvatar:
         self._chat_voice_end_emitter = emitter
 
     def voice_chat_turn_begin(self, request_id: Optional[str]) -> None:
-        if not request_id or getattr(self.config.tts, "type", "") != "elevenlabs":
+        tts_type = getattr(self.config.tts, "type", "")
+        if tts_type == "minimax":
+            voice_turn_begin = getattr(self.tts, "voice_turn_begin", None)
+            if callable(voice_turn_begin):
+                voice_turn_begin(request_id)
+        if not request_id or tts_type != "elevenlabs":
             return
         with self._voice_lock:
             self._voice_request_id = str(request_id)
@@ -109,6 +114,9 @@ class BaseAvatar:
             self._try_emit_chat_voice_end_unlocked()
 
     def voice_chat_turn_reset(self) -> None:
+        voice_turn_reset = getattr(self.tts, "voice_turn_reset", None)
+        if callable(voice_turn_reset):
+            voice_turn_reset()
         with self._voice_lock:
             self._voice_request_id = None
             self._voice_segments_queued = 0
@@ -172,11 +180,41 @@ class BaseAvatar:
 
         return stream
 
+    def _drain_pending_silent_res_frames(self) -> int:
+        """Drop queued idle-face frames so the next speech segment starts on real lip-sync."""
+        drained = 0
+        while True:
+            try:
+                item = self.res_frame_queue.get_nowait()
+            except queue.Empty:
+                break
+            res_frame, _, audio_frames = item
+            silent_audio = (
+                audio_frames[0][1] != 0 and audio_frames[1][1] != 0
+            )
+            if res_frame is None or silent_audio:
+                drained += 1
+                continue
+            self.res_frame_queue.put(item)
+            break
+        if drained:
+            logger.info(
+                "Drained %d stale silent res_frame(s) before speech sessionid=%s",
+                drained,
+                self.config.sessionid,
+            )
+        return drained
+
     def flush_talk(self):
         # 清空 TTS 和音频流队列，快速打断当前发声
         self.voice_chat_turn_reset()
         self.tts.flush_talk()
         self.audio_stream.flush_talk()
+        media_sink = getattr(self, "_media_sink", None)
+        if media_sink is not None:
+            on_interrupt = getattr(media_sink, "on_speech_interrupted", None)
+            if callable(on_interrupt):
+                on_interrupt()
 
     def is_speaking(self)->bool:
         return self.speaking
@@ -246,6 +284,9 @@ class BaseAvatar:
     def process_frames(self,quit_event,loop=None,audio_track=None,video_track=None,media_sink=None):
         logger.info(f'[帧处理] process_frames 线程启动, sessionid={self.config.sessionid}')
         idle_idx = 0
+        was_speaking = False
+        lip_pace_next: float | None = None
+        video_frame_interval = 1.0 / max(1, int(getattr(self.config.video, "fps", 25)))
         # 过渡效果用于降低静音/说话切换时的突变
         enable_transition = False
         
@@ -305,6 +346,11 @@ class BaseAvatar:
                 else:
                     combine_frame = target_frame
             else:
+                if not was_speaking and media_sink is not None:
+                    on_start = getattr(media_sink, "on_speech_start", None)
+                    if callable(on_start):
+                        on_start()
+                    lip_pace_next = None
                 self.speaking = True
                 try:
                     current_frame = self.paste_back_frame(res_frame,idx)
@@ -327,6 +373,7 @@ class BaseAvatar:
             if video_track is not None and loop is not None:
                 new_frame = VideoFrame.from_ndarray(image, format="bgr24")
                 asyncio.run_coroutine_threadsafe(video_track._queue.put((new_frame, None)), loop)
+            av_pushed_to_sink = False
             if media_sink is not None:
                 if self.speaking and hasattr(media_sink, "mark_streaming_active"):
                     media_sink.mark_streaming_active()
@@ -335,7 +382,54 @@ class BaseAvatar:
                     and getattr(media_sink, "feeds_idle_video_externally", False)
                 )
                 if not skip_idle_video:
-                    media_sink.push_video(combine_frame)
+                    streaming_active = (
+                        media_sink is not None
+                        and getattr(media_sink, "is_streaming_active", False)
+                    )
+                    backlog = getattr(media_sink, "outbound_video_backlog", None)
+                    buf_cap = getattr(media_sink, "video_out_buffer_capacity", None)
+                    if streaming_active and callable(backlog) and callable(buf_cap):
+                        cap = max(1, int(buf_cap()))
+                        while backlog() >= cap:
+                            if quit_event.is_set():
+                                break
+                            time.sleep(0.01)
+                    elif not streaming_active and callable(backlog) and callable(buf_cap):
+                        cap = max(1, int(buf_cap()))
+                        deadline = time.perf_counter() + 2.0
+                        while backlog() >= cap:
+                            if quit_event.is_set() or time.perf_counter() >= deadline:
+                                break
+                            time.sleep(0.01)
+                    if self.speaking:
+                        av_audio = []
+                        for audio_frame in audio_frames:
+                            frame, type, eventpoint = audio_frame
+                            av_audio.append(
+                                ((frame * 32767).astype(np.int16), eventpoint, type)
+                            )
+                        if hasattr(media_sink, "push_av_pair"):
+                            media_sink.push_av_pair(combine_frame, av_audio)
+                        else:
+                            for pcm, _ep, _t in av_audio:
+                                media_sink.push_audio(pcm, _ep, audio_type=_t)
+                            media_sink.push_video(combine_frame)
+                    else:
+                        av_audio = []
+                        for audio_frame in audio_frames:
+                            frame, type, eventpoint = audio_frame
+                            av_audio.append(
+                                ((frame * 32767).astype(np.int16), eventpoint, type)
+                            )
+                        if hasattr(media_sink, "push_av_pair"):
+                            media_sink.push_av_pair(combine_frame, av_audio)
+                        else:
+                            media_sink.push_video(combine_frame)
+                            for pcm, ep, t in av_audio:
+                                media_sink.push_audio(pcm, ep, audio_type=t)
+                    av_pushed_to_sink = True
+            else:
+                skip_idle_video = False
             self.record_video_data(combine_frame)
 
             for audio_frame in audio_frames:
@@ -347,10 +441,27 @@ class BaseAvatar:
                     new_frame.planes[0].update(frame.tobytes())
                     new_frame.sample_rate=16000
                     asyncio.run_coroutine_threadsafe(audio_track._queue.put((new_frame, eventpoint)), loop)
-                if media_sink is not None:
+                if media_sink is not None and not av_pushed_to_sink and not skip_idle_video:
                     media_sink.push_audio(frame, eventpoint, audio_type=type)
                 self.record_audio_data(frame)
-        logger.info('basereal process_frames thread stop') 
+            if (
+                media_sink is not None
+                and getattr(media_sink, "is_streaming_active", False)
+                and av_pushed_to_sink
+            ):
+                now = time.perf_counter()
+                if lip_pace_next is None:
+                    lip_pace_next = now
+                lip_pace_next += video_frame_interval
+                wait = lip_pace_next - time.perf_counter()
+                if wait > 0:
+                    time.sleep(wait)
+                elif wait < -video_frame_interval * 2:
+                    lip_pace_next = time.perf_counter()
+            elif media_sink is not None:
+                lip_pace_next = None
+            was_speaking = self.speaking
+        logger.info('basereal process_frames thread stop')
 
 
     def start_recording(self):

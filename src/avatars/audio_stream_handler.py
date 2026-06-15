@@ -47,6 +47,9 @@ class BaseAudioStreamHandler:
         try:
             frame, eventpoint = self.queue.get(block=True, timeout=0.01)
             type = 0
+            if eventpoint and eventpoint.get("status") == "end":
+                # TTS sentence tail padding (e.g. MiniMax); treat as silence for lip-sync.
+                type = 1
             #print(f'[INFO] get frame {frame.shape}')
         except queue.Empty:
             if self.parent and self.parent.curr_state > 1: #播放自定义音频
