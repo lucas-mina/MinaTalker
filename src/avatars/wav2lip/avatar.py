@@ -23,6 +23,7 @@ from src.avatars.wav2lip.audio_stream_handler import LipAudioStreamHandler
 import asyncio
 from av import AudioFrame, VideoFrame
 from src.avatars.wav2lip.models import Wav2Lip
+from src.avatars.wav2lip.gfpgan_enhancer import GPU_INFER_LOCK, build_gfpgan_enhancer
 from src.avatars.base import BaseAvatar
 
 #from imgcache import ImgCache
@@ -36,6 +37,21 @@ device = "cuda" if torch.cuda.is_available() else ("mps" if (hasattr(torch.backe
 WAV2LIP_FACE_SIZE = 256
 print('Using {} for inference.'.format(device))
 
+
+def _infer_dtype(use_fp16: bool) -> torch.dtype:
+    return torch.float16 if use_fp16 and device == "cuda" else torch.float32
+
+
+def _wav2lip_cfg(config):
+    if config is None:
+        return None
+    return getattr(getattr(config, "model", None), "wav2lip", None)
+
+
+def _use_fp16(config) -> bool:
+    wav2lip_cfg = _wav2lip_cfg(config)
+    return bool(getattr(wav2lip_cfg, "fp16", False)) and device == "cuda"
+
 # In-process cache for avatar assets: avatar_id -> (frame_list, face_list, coord_list)
 _AVATAR_CACHE = {}
 
@@ -47,9 +63,9 @@ def _load(checkpoint_path):
 	checkpoint = torch.load(checkpoint_path, **kwargs)
 	return checkpoint
 
-def load_model(path):
+def _load_pytorch_model(path, *, use_fp16: bool):
 	model = Wav2Lip()
-	logger.info("Load checkpoint from: {}".format(path))
+	logger.info("Load checkpoint from: %s", path)
 	checkpoint = _load(path)
 	s = checkpoint["state_dict"]
 	new_s = {}
@@ -57,8 +73,43 @@ def load_model(path):
 		new_s[k.replace('module.', '')] = v
 	model.load_state_dict(new_s)
 
-	model = model.to(device)
-	return model.eval()
+	model = model.to(device).eval()
+	if use_fp16:
+		model = model.half()
+		logger.info("Wav2Lip model loaded in FP16")
+	return model
+
+
+def load_model(path, config=None, batch_size=None):
+	wav2lip_cfg = _wav2lip_cfg(config)
+	backend = getattr(wav2lip_cfg, "backend", "pytorch") if wav2lip_cfg else "pytorch"
+	use_fp16 = _use_fp16(config)
+
+	if backend == "tensorrt":
+		from src.avatars.wav2lip.trt_runner import Wav2LipTensorRTModel, default_onnx_path
+
+		if batch_size is None and config is not None:
+			batch_size = int(getattr(config.model, "batch_size", 4) or 4)
+		if batch_size is None:
+			batch_size = 4
+		onnx_path = getattr(wav2lip_cfg, "onnx_path", "") if wav2lip_cfg else ""
+		if not onnx_path:
+			models_dir = getattr(config.model, "model_path", "./models") if config else "./models"
+			onnx_path = default_onnx_path(
+				batch_size=batch_size,
+				face_size=WAV2LIP_FACE_SIZE,
+				models_dir=models_dir,
+			)
+		trt_cache = getattr(wav2lip_cfg, "trt_cache_path", "./models/trt_cache") if wav2lip_cfg else "./models/trt_cache"
+		trt_fp16 = bool(getattr(wav2lip_cfg, "trt_fp16", True)) if wav2lip_cfg else True
+		return Wav2LipTensorRTModel.load(
+			onnx_path,
+			trt_cache_path=trt_cache,
+			trt_fp16=trt_fp16,
+			device=device,
+		)
+
+	return _load_pytorch_model(path, use_fp16=use_fp16)
 
 def load_avatar(avatar_id):
     # Return from cache if already loaded
@@ -103,11 +154,15 @@ def preload_avatars(avatar_ids):
             logger.exception("Failed to preload Wav2Lip avatar %s", avatar_id)
 
 @torch.no_grad()
-def warm_up(batch_size,model,modelres):
+def warm_up(batch_size, model, modelres):
     # 预热函数
     logger.info('warmup model...')
-    img_batch = torch.ones(batch_size, 6, modelres, modelres).to(device)
-    mel_batch = torch.ones(batch_size, 1, 80, 16).to(device)
+    try:
+        dtype = next(model.parameters()).dtype
+    except (StopIteration, AttributeError):
+        dtype = torch.float32
+    img_batch = torch.ones(batch_size, 6, modelres, modelres, device=device, dtype=dtype)
+    mel_batch = torch.ones(batch_size, 1, 80, 16, device=device, dtype=dtype)
     model(mel_batch, img_batch)
 
 def __mirror_index(size, index):
@@ -119,7 +174,7 @@ def __mirror_index(size, index):
     else:
         return size - res - 1 
 
-def inference(quit_event,batch_size,face_list_cycle,audio_feat_queue,audio_out_queue,res_frame_queue,model):
+def inference(quit_event, batch_size, face_list_cycle, audio_feat_queue, audio_out_queue, res_frame_queue, model, gfpgan=None):
     
     #model = load_model("./models/wav2lip.pth")
     # input_face_list = glob.glob(os.path.join(face_imgs_path, '*.[jpJP][pnPN]*[gG]'))
@@ -174,13 +229,50 @@ def inference(quit_event,batch_size,face_list_cycle,audio_feat_queue,audio_out_q
 
             img_batch = np.concatenate((img_masked, img_batch), axis=3) / 255.
             mel_batch = np.reshape(mel_batch, [len(mel_batch), mel_batch.shape[1], mel_batch.shape[2], 1])
-            
-            img_batch = torch.FloatTensor(np.transpose(img_batch, (0, 3, 1, 2))).to(device)
-            mel_batch = torch.FloatTensor(np.transpose(mel_batch, (0, 3, 1, 2))).to(device)
+
+            try:
+                dtype = next(model.parameters()).dtype
+            except (StopIteration, AttributeError):
+                dtype = torch.float32
+            img_batch = torch.as_tensor(
+                np.transpose(img_batch, (0, 3, 1, 2)),
+                device=device,
+                dtype=dtype,
+            )
+            mel_batch = torch.as_tensor(
+                np.transpose(mel_batch, (0, 3, 1, 2)),
+                device=device,
+                dtype=dtype,
+            )
 
             with torch.no_grad():
-                pred = model(mel_batch, img_batch)
-            pred = pred.cpu().numpy().transpose(0, 2, 3, 1) * 255.
+                if gfpgan is not None:
+                    with GPU_INFER_LOCK:
+                        pred = model(mel_batch, img_batch)
+                        pred = (
+                            pred.float()
+                            .clamp_(0.0, 1.0)
+                            .mul_(255.0)
+                            .byte()
+                            .permute(0, 2, 3, 1)
+                            .cpu()
+                            .numpy()
+                        )
+                        pred = np.stack(
+                            [gfpgan.enhance(frame, _lock=False) for frame in pred],
+                            axis=0,
+                        )
+                else:
+                    pred = model(mel_batch, img_batch)
+                    pred = (
+                        pred.float()
+                        .clamp_(0.0, 1.0)
+                        .mul_(255.0)
+                        .byte()
+                        .permute(0, 2, 3, 1)
+                        .cpu()
+                        .numpy()
+                    )
 
             counttime += (time.perf_counter() - t)
             count += batch_size
@@ -217,6 +309,10 @@ class Wav2LipAvatar(BaseAvatar):
         self.frame_list_cycle = list(frames)
         self.face_list_cycle  = list(faces)
         self.coord_list_cycle = list(coords)
+
+        self.gfpgan = build_gfpgan_enhancer(config)
+        if self.gfpgan is not None:
+            self.gfpgan.warm_up(WAV2LIP_FACE_SIZE)
 
         self.audio_stream = LipAudioStreamHandler(config, self)
         self.audio_stream.warm_up()
@@ -297,7 +393,7 @@ class Wav2LipAvatar(BaseAvatar):
         infer_quit_event = Event()
         infer_thread = Thread(target=inference, args=(infer_quit_event,self.batch_size,self.face_list_cycle,
                                            self.audio_stream.feat_queue,self.audio_stream.output_queue,self.res_frame_queue,
-                                           self.model,))  #mp.Process
+                                           self.model,self.gfpgan,))  #mp.Process
         infer_thread.start()
         
         process_quit_event = Event()

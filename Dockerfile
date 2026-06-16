@@ -6,14 +6,14 @@
 #   docker compose build          # deps layer cached when only src/config changed
 #   docker compose up -d --build  # skip build if image exists
 #
-FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \
     UV_COMPILE_BYTECODE=1 \
-    MINATALKER_CONFIG=config/config_wav2lip.yaml
+    MINATALKER_CONFIG=config/config_wav2lip_docker.yaml
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -44,8 +44,9 @@ COPY pyproject.toml ./
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv venv --python python3.10 \
-    &&     uv sync --extra agora --no-install-project \
-    && uv pip install elevenlabs
+    && uv sync --extra agora --extra gfpgan --extra tensorrt --no-install-project \
+    && uv pip install elevenlabs \
+    && test -f .venv/lib/python3.10/site-packages/tensorrt_libs/libnvinfer.so.10
 
 # --- App code: cheap rebuild when Python sources change ---
 COPY src ./src
@@ -57,9 +58,11 @@ COPY config ./config
 COPY web ./web
 COPY scripts ./scripts
 COPY docker/entrypoint.sh /entrypoint.sh
+COPY docker/wav2lip_tensorrt_setup.sh ./docker/wav2lip_tensorrt_setup.sh
 
-RUN chmod +x /entrypoint.sh \
-    && mkdir -p ssl_certs models agora_rtc_log data/records
+RUN sed -i 's/\r$//' /entrypoint.sh docker/wav2lip_tensorrt_setup.sh \
+    && chmod +x /entrypoint.sh docker/wav2lip_tensorrt_setup.sh \
+    && mkdir -p ssl_certs models agora_rtc_log data/records models/trt_cache
 
 EXPOSE 8010
 

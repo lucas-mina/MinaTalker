@@ -210,6 +210,37 @@ class TalkingGaussianConfig:
     bg_img: str = "white"
     sh_degree: int = 3
 
+
+@dataclass
+class Wav2LipGFPGANConfig:
+    """Optional GFPGAN face restoration on Wav2Lip mouth crops."""
+    enabled: bool = False
+    model_path: str = "./models/GFPGANv1.4.pth"
+    arch: str = "clean"
+    channel_multiplier: int = 2
+    upscale: int = 1
+    use_amp: bool = False  # false = full FP32; true = cuda autocast (faster, can artifact)
+    enhance_weight: float = 0.25  # GFPGAN internal blend (lower = subtler; lip-sync: 0.15–0.35)
+    adaptive_weight: bool = False  # blur-based weight; off for lip-sync (keeps motion stable)
+    mouth_only: bool = True  # blend GFPGAN into mouth band only; upper face stays Wav2Lip
+    mouth_mix: float = 0.35  # Wav2Lip vs GFPGAN in mouth band (0=off, 1=full GFPGAN)
+    mouth_region_start: float = 0.58  # mouth band top as fraction of crop height (tighter than 0.5)
+    mouth_blend_rows: int = 12  # feather rows at mouth/face seam
+    frame_cache_size: int = 64  # LRU cache for duplicate mouth crops
+    fp16: bool | None = None  # legacy alias for use_amp
+
+
+@dataclass
+class Wav2LipConfig:
+    """Wav2Lip-specific options."""
+    backend: str = "pytorch"  # pytorch | tensorrt
+    fp16: bool = True
+    onnx_path: str = ""
+    trt_cache_path: str = "./models/trt_cache"
+    trt_fp16: bool = True
+    gfpgan: Wav2LipGFPGANConfig = field(default_factory=Wav2LipGFPGANConfig)
+
+
 @dataclass
 class ModelConfig:
     """模型配置"""
@@ -223,6 +254,7 @@ class ModelConfig:
     # 模型专属配置
     ernerf: ERNeRfConfig = field(default_factory=ERNeRfConfig)
     talkinggaussian: TalkingGaussianConfig = field(default_factory=TalkingGaussianConfig)
+    wav2lip: Wav2LipConfig = field(default_factory=Wav2LipConfig)
 
 
 @dataclass

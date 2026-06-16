@@ -41,6 +41,18 @@ dependencies = [
 agora = [
     "agora-python-server-sdk; sys_platform == 'linux' or sys_platform == 'darwin'",
 ]
+gfpgan = [
+    "gfpgan",
+    "basicsr",
+    "facexlib",
+]
+# Wav2Lip TensorRT via ONNX Runtime TensorRT EP (Linux + NVIDIA).
+# ORT 1.22–1.23 dlopens libnvinfer.so.10 — pin TRT 10.x libs (not 11.x).
+tensorrt = [
+    "onnx>=1.16.0",
+    "onnxruntime-gpu>=1.22.0,<1.24",
+    "tensorrt-cu12-libs>=10.9.0,<11",
+]
 
 [tool.uv.sources]
 torch = [

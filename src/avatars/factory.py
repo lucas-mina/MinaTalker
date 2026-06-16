@@ -62,9 +62,13 @@ def prepare_avatar_model(config: Any):
         return model, avatar
     elif model_type == 'wav2lip':
         from .wav2lip.avatar import load_model, load_avatar, warm_up, WAV2LIP_FACE_SIZE
-        model = load_model("./models/wav2lip.pth")
+        from .wav2lip.gfpgan_enhancer import build_gfpgan_enhancer
+        model = load_model("./models/wav2lip.pth", config, config.model.batch_size)
         avatar = load_avatar(config.model.avatar_id)
         warm_up(config.model.batch_size, model, WAV2LIP_FACE_SIZE)
+        gfpgan = build_gfpgan_enhancer(config)
+        if gfpgan is not None:
+            gfpgan.warm_up(WAV2LIP_FACE_SIZE)
         return model, avatar
     elif model_type == 'ultralight':
         from .ultralight.avatar import load_model, load_avatar, warm_up

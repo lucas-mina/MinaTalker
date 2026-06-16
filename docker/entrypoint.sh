@@ -38,14 +38,14 @@ sync_models_from_host() {
 
   mkdir -p "${app_dir}"
   local host_stamp
-  host_stamp="$(stat -c '%s-%Y' "${host_dir}/wav2lip.pth")"
+  host_stamp="$(find "${host_dir}" -maxdepth 1 -name '*.pth' -printf '%f:%s:%Y\n' 2>/dev/null | sort | md5sum | awk '{print $1}')"
   local force_sync="${SYNC_MODELS:-0}"
 
   if [[ "${force_sync}" == "1" ]] \
     || [[ ! -f "${app_dir}/wav2lip.pth" ]] \
     || [[ ! -f "${stamp_file}" ]] \
     || [[ "$(cat "${stamp_file}" 2>/dev/null || true)" != "${host_stamp}" ]]; then
-    echo "[entrypoint] Syncing models ${host_dir} -> ${app_dir} (avoids Windows bind-mount I/O errors)..."
+    echo "[entrypoint] Syncing models ${host_dir} -> ${app_dir} (stamp=${host_stamp:0:8}...)..."
     cp -a "${host_dir}/." "${app_dir}/"
     echo "${host_stamp}" > "${stamp_file}"
     echo "[entrypoint] Model sync complete ($(stat -c%s "${app_dir}/wav2lip.pth") bytes)"
@@ -58,6 +58,18 @@ sync_models_from_host || true
 
 if [[ ! -f "models/wav2lip.pth" ]]; then
   echo "[entrypoint] WARNING: models/wav2lip.pth still missing after sync"
+fi
+
+TRT_LIB_DIR="/app/.venv/lib/python3.10/site-packages/tensorrt_libs"
+if [[ -d "${TRT_LIB_DIR}" ]]; then
+  export LD_LIBRARY_PATH="${TRT_LIB_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+  export TENSORRT_LIB_DIR="${TRT_LIB_DIR}"
+fi
+
+if [[ -f "docker/wav2lip_tensorrt_setup.sh" ]]; then
+  # shellcheck source=docker/wav2lip_tensorrt_setup.sh
+  source docker/wav2lip_tensorrt_setup.sh
+  _wav2lip_tensorrt_prepare || true
 fi
 
 if [[ ! -d "data/avatars" ]] || [[ -z "$(ls -A data/avatars 2>/dev/null || true)" ]]; then

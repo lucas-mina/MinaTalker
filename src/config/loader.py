@@ -9,6 +9,7 @@ from dataclasses import fields
 from .schema import (
     Config, AppConfig, ModelConfig, TTSConfig, ASRConfig, VADConfig, LLMConfig,
     AudioConfig, VideoConfig, CustomVideoConfig, ERNeRfConfig, TalkingGaussianConfig,
+    Wav2LipConfig, Wav2LipGFPGANConfig,
     WebRTCConfig, AgoraConfig,
 )
 
@@ -88,10 +89,40 @@ def dict_to_config(config_dict: Dict) -> Config:
     
     # 创建 TalkingGaussianConfig
     talkinggaussian_config = TalkingGaussianConfig(**model_dict.get('talkinggaussian', {}))
+
+    wav2lip_raw = model_dict.get('wav2lip', {})
+    if not isinstance(wav2lip_raw, dict):
+        wav2lip_raw = {}
+    gfpgan_raw = wav2lip_raw.get('gfpgan', {})
+    if not isinstance(gfpgan_raw, dict):
+        gfpgan_raw = {}
+    _wav2lip_fields = {f.name for f in fields(Wav2LipConfig) if f.name != 'gfpgan'}
+    _gfpgan_fields = {f.name for f in fields(Wav2LipGFPGANConfig)}
+    wav2lip_kwargs = {k: v for k, v in wav2lip_raw.items() if k in _wav2lip_fields}
+    gfpgan_kwargs = {k: v for k, v in gfpgan_raw.items() if k in _gfpgan_fields}
+    unknown_gfpgan = set(gfpgan_raw) - _gfpgan_fields
+    if unknown_gfpgan:
+        from src.utils.logging import logger
+        logger.warning(
+            "Ignoring unknown model.wav2lip.gfpgan keys: %s",
+            sorted(unknown_gfpgan),
+        )
+    wav2lip_config = Wav2LipConfig(
+        gfpgan=Wav2LipGFPGANConfig(**gfpgan_kwargs),
+        **wav2lip_kwargs,
+    )
     
     # 创建 ModelConfig
-    model_dict_for_init = {k: v for k, v in model_dict.items() if k not in ['ernerf', 'talkinggaussian']}
-    model_config = ModelConfig(**model_dict_for_init, ernerf=ernerf_config, talkinggaussian=talkinggaussian_config)
+    model_dict_for_init = {
+        k: v for k, v in model_dict.items()
+        if k not in ('ernerf', 'talkinggaussian', 'wav2lip')
+    }
+    model_config = ModelConfig(
+        **model_dict_for_init,
+        ernerf=ernerf_config,
+        talkinggaussian=talkinggaussian_config,
+        wav2lip=wav2lip_config,
+    )
     
     tts_config = TTSConfig(**config_dict.get('tts', {}))
     # Handle nested vad dict so ASRConfig receives a VADConfig object, not a raw dict
